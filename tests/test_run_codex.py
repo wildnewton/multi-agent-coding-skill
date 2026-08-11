@@ -165,6 +165,14 @@ class InvokeAgentTests(unittest.TestCase):
         with self.assertRaises(InvalidAgentResult):
             self.invoke("testing", runner)
 
+    def test_role_incompatible_status_fails_closed(self):
+        runner = FakeRunner(
+            [codex_stdout("T52", 'HERMES_RESULT={"status":"GREEN_COMPLETE"}')]
+        )
+
+        with self.assertRaises(InvalidAgentResult):
+            self.invoke("testing", runner)
+
 
 if __name__ == "__main__":
     unittest.main()

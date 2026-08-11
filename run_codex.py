@@ -316,9 +316,6 @@ def invoke_agent(
             _require_nonempty_text(result, "task", "Coordinator HANDOFF")
             _require_nonempty_text(result, "reason", "Coordinator HANDOFF")
             if next_agent == "review":
-                _require_nonempty_text(
-                    result, "test_command", "Coordinator review HANDOFF"
-                )
                 has_full_command = _has_nonempty_text(result, "full_test_command")
                 has_unavailable_reason = _has_nonempty_text(
                     result, "full_test_unavailable_reason"

@@ -198,17 +198,17 @@ class GitOwnershipContractTests(unittest.TestCase):
                 '"test_command":"pytest tests/test_feature.py","summary":"RED"}',
             )
 
-    def test_review_handoff_does_not_require_agent_owned_commit(self):
+    def test_review_handoff_reuses_verified_targeted_test_evidence(self):
         result, _ = self.invoke(
             "coordinator",
             'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
             '"task":"Review verified GREEN","reason":"GREEN is ready",'
-            '"test_command":"pytest tests/test_feature.py",'
             '"full_test_command":"pytest"}',
         )
 
         self.assertEqual(result["status"], "HANDOFF")
         self.assertEqual(result["next_agent"], "review")
+        self.assertNotIn("test_command", result)
         self.assertNotIn("commit", result)
 
     def test_review_handoff_rejects_agent_owned_commit(self):

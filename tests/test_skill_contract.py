@@ -33,6 +33,10 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertIn(required, self.text)
 
+    def test_skill_has_a_concrete_pr_comment_command(self):
+        self.assertIn("`gh` is installed and authenticated", self.text)
+        self.assertIn("gh pr comment <pr-number>", self.text)
+
 
 if __name__ == "__main__":
     unittest.main()

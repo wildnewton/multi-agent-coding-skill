@@ -13,9 +13,21 @@ from typing import Callable, Iterable
 
 
 AGENTS = {
-    "testing": {"prompt": "testing.md", "persistent": True},
-    "coordinator": {"prompt": "coordinator.md", "persistent": True},
-    "review": {"prompt": "review.md", "persistent": False},
+    "testing": {
+        "prompt": "testing.md",
+        "persistent": True,
+        "statuses": {"RED_COMPLETE", "BLOCKED"},
+    },
+    "coordinator": {
+        "prompt": "coordinator.md",
+        "persistent": True,
+        "statuses": {"GREEN_COMPLETE", "BLOCKED"},
+    },
+    "review": {
+        "prompt": "review.md",
+        "persistent": False,
+        "statuses": {"REVIEW_CLEAN", "CHANGES_REQUIRED", "BLOCKED"},
+    },
 }
 
 RESULT_MARKER = "HERMES_RESULT="
@@ -167,6 +179,10 @@ def invoke_agent(
         )
 
     thread_id, result = _parse_output(completed.stdout)
+    if result["status"] not in config["statuses"]:
+        raise InvalidAgentResult(
+            f"status {result['status']!r} is invalid for agent {agent!r}"
+        )
     if config["persistent"] and session_id is None:
         if not thread_id:
             raise CodexInvocationError("Codex did not emit thread.started for new session")

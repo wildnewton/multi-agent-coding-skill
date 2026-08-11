@@ -123,7 +123,7 @@ Coordinator may:
 - return `AWAIT_USER_DECISION` when requirements cannot be safely inferred;
 - after implementation, targeted/full test execution, and a GREEN commit, request Review with `HANDOFF -> review`.
 
-A Coordinator handoff to Review must include structured GREEN evidence: `commit`, `test_command`, and `full_test_command`.
+A Coordinator handoff to Review must include structured GREEN evidence: `commit`, `test_command`, and exactly one of `full_test_command` or `full_test_unavailable_reason`.
 
 Before Hermes executes a Coordinator handoff to Review, Hermes verifies mechanically that the proposed GREEN state is reviewable:
 
@@ -131,7 +131,8 @@ Before Hermes executes a Coordinator handoff to Review, Hermes verifies mechanic
 - there are no uncommitted tracked/staged changes (`git diff --quiet` and `git diff --cached --quiet`);
 - RED test intent was not silently weakened;
 - the reported targeted `test_command` passes;
-- the reported `full_test_command` passes, or explicitly records why no full suite is available;
+- if `full_test_command` is present, it passes;
+- otherwise `full_test_unavailable_reason` must clearly state why no full suite is available;
 - CI passes when configured.
 
 If GREEN verification fails, do not invoke Review. Resume Coordinator with the failed verification evidence. Coordinator decides whether to fix implementation or route back to Testing.
@@ -200,7 +201,7 @@ Hermes must:
 - invoke the agent requested by a valid Coordinator `HANDOFF`;
 - allow Coordinator `HANDOFF` destinations only to `testing` or `review`;
 - require a concrete `task` for every Coordinator `HANDOFF`;
-- require `commit`, `test_command`, and `full_test_command` before a Coordinator handoff to Review;
+- require `commit`, `test_command`, and exactly one of `full_test_command` or `full_test_unavailable_reason` before a Coordinator handoff to Review;
 - require a `question` for `AWAIT_USER_DECISION` and `reviewed_head` for `AWAIT_USER_MERGE`;
 - reject specialist results that attempt to specify `next_agent`;
 - return every Testing and Review result to Coordinator;
@@ -291,7 +292,7 @@ Expected statuses:
 - Testing: `RED_COMPLETE` or `BLOCKED`.
 - Review: `REVIEW_CLEAN`, `CHANGES_REQUIRED`, or `BLOCKED`.
 
-Coordinator `HANDOFF` must include `next_agent` (`testing` or `review`) and a non-empty `task`. A Review handoff must also include non-empty `commit`, `test_command`, and `full_test_command` evidence fields.
+Coordinator `HANDOFF` must include `next_agent` (`testing` or `review`) and a non-empty `task`. A Review handoff must also include non-empty `commit` and `test_command`, plus exactly one of `full_test_command` or `full_test_unavailable_reason`.
 
 `AWAIT_USER_DECISION` must include a non-empty `question`. `AWAIT_USER_MERGE` must include a non-empty `reviewed_head`.
 

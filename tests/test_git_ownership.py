@@ -19,12 +19,16 @@ def codex_stdout(thread_id, final_message):
 
 
 class FakeRunner:
-    def __init__(self, output):
+    def __init__(self, output, mutation=None):
         self.output = output
+        self.mutation = mutation
         self.calls = []
 
     def __call__(self, command, cwd, input_text):
-        self.calls.append((command, Path(cwd), input_text))
+        cwd = Path(cwd)
+        self.calls.append((command, cwd, input_text))
+        if self.mutation is not None:
+            self.mutation(cwd)
         return subprocess.CompletedProcess(
             command,
             0,
@@ -40,6 +44,7 @@ class GitOwnershipContractTests(unittest.TestCase):
         self.root = Path(self.tempdir.name)
         self.repo = self.root / "target-repo"
         self.repo.mkdir()
+        self.remote = self.root / "origin.git"
         self.state_file = self.root / "workflow.json"
         self.prompts = self.root / "prompts"
         self.prompts.mkdir()
@@ -54,6 +59,15 @@ class GitOwnershipContractTests(unittest.TestCase):
         (self.repo / "README.md").write_text("clean\n", encoding="utf-8")
         self._git("add", "README.md")
         self._git("commit", "-m", "initial")
+        self._git("branch", "-M", "feature")
+        subprocess.run(
+            ["git", "init", "--bare", str(self.remote)],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        self._git("remote", "add", "origin", str(self.remote))
+        self._git("push", "-u", "origin", "feature")
 
     def _git(self, *args):
         return subprocess.run(
@@ -64,9 +78,8 @@ class GitOwnershipContractTests(unittest.TestCase):
             capture_output=True,
         )
 
-    def invoke(self, agent, output):
-        runner = FakeRunner(codex_stdout(f"{agent}-thread", output))
-        result = invoke_agent(
+    def invoke_with_runner(self, agent, runner):
+        return invoke_agent(
             agent=agent,
             workflow_id="issue-137",
             repo=self.repo,
@@ -75,7 +88,10 @@ class GitOwnershipContractTests(unittest.TestCase):
             prompt_dir=self.prompts,
             runner=runner,
         )
-        return result, runner
+
+    def invoke(self, agent, output):
+        runner = FakeRunner(codex_stdout(f"{agent}-thread", output))
+        return self.invoke_with_runner(agent, runner), runner
 
     def test_dirty_worktree_is_rejected_before_codex(self):
         (self.repo / "README.md").write_text("dirty\n", encoding="utf-8")
@@ -88,17 +104,69 @@ class GitOwnershipContractTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(RuntimeError, "clean worktree"):
-            invoke_agent(
-                agent="testing",
-                workflow_id="issue-137",
-                repo=self.repo,
-                task="add RED coverage",
-                state_file=self.state_file,
-                prompt_dir=self.prompts,
-                runner=runner,
-            )
+            self.invoke_with_runner("testing", runner)
 
         self.assertEqual(runner.calls, [])
+
+    def test_agent_cannot_change_local_head(self):
+        def mutate(repo):
+            subprocess.run(
+                ["git", "commit", "--allow-empty", "-m", "agent commit"],
+                cwd=repo,
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+
+        runner = FakeRunner(
+            codex_stdout(
+                "testing-thread",
+                'HERMES_RESULT={"status":"RED_COMPLETE",'
+                '"test_command":"pytest tests/test_feature.py","summary":"RED"}',
+            ),
+            mutation=mutate,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "local git state"):
+            self.invoke_with_runner("testing", runner)
+
+    def test_agent_cannot_advance_remote_branch_without_local_head_change(self):
+        original_head = self._git("rev-parse", "HEAD").stdout.strip()
+
+        def mutate(repo):
+            subprocess.run(
+                ["git", "commit", "--allow-empty", "-m", "remote-only agent commit"],
+                cwd=repo,
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "push", "origin", "HEAD:feature"],
+                cwd=repo,
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "reset", "--hard", original_head],
+                cwd=repo,
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+
+        runner = FakeRunner(
+            codex_stdout(
+                "coordinator-thread",
+                'HERMES_RESULT={"status":"HANDOFF","next_agent":"testing",'
+                '"task":"Add RED coverage"}',
+            ),
+            mutation=mutate,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "remote branch"):
+            self.invoke_with_runner("coordinator", runner)
 
     def test_red_complete_requires_test_command(self):
         with self.assertRaises(InvalidAgentResult):

@@ -11,8 +11,6 @@ You only receive work from Coordinator and return results to Coordinator through
 
 Do not modify production code, implement features, weaken tests to make implementation easier, or merge/close PRs. Do not create production stubs to exercise tests.
 
-You may inspect repository state with read-only git/gh commands. Do not mutate git or GitHub state. Leave permitted file edits unstaged for Hermes to validate and commit.
-
 ## Test Standard
 
 Treat tests as executable specification.

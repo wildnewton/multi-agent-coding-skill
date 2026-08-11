@@ -60,6 +60,8 @@ Hermes owns all repository-state mutation:
 
 Codex agents may use read-only commands such as `git status`, `git diff`, `git log`, `git show`, `git rev-parse`, and read-only `gh` queries. They must not mutate `.git/` or remote state, including via `gh api`/GitHub Git Data API workarounds.
 
+Git/GitHub mutation is outside every agent's responsibility; inability to perform it is not a valid `BLOCKED` reason.
+
 Before every Codex invocation, the worktree must be clean. `run_codex.py` enforces this.
 
 Coordinator and Testing may leave only role-permitted unstaged file edits. Review must leave the worktree unchanged. Hermes validates the resulting state and either commits permitted verified edits or discards unverified edits before another Codex invocation.
@@ -135,7 +137,7 @@ Publish the Testing handoff comment described below. Then resume Coordinator wit
 - RED verification success/failure and evidence;
 - current HEAD/PR state.
 
-If Testing returns `BLOCKED`, return that result to Coordinator as well. Testing never chooses Review or the user. Inability to write `.git/` is not a Testing blocker because Testing does not own commits.
+If Testing returns `BLOCKED`, return that result to Coordinator as well. Testing never chooses Review or the user.
 
 ### 3. Coordinator decides after Testing
 
@@ -148,14 +150,14 @@ Coordinator may:
 - return `AWAIT_USER_DECISION` when requirements cannot be safely inferred;
 - after implementation and targeted/full test execution, request Review with `HANDOFF -> review`; Hermes creates the GREEN commit after verification.
 
-A Coordinator handoff to Review must include structured GREEN evidence: a non-empty `reason`, `test_command`, and exactly one of `full_test_command` or `full_test_unavailable_reason`.
+A Coordinator handoff to Review must include a non-empty `reason` and exactly one of `full_test_command` or `full_test_unavailable_reason`. The targeted command comes from the verified Testing result.
 
 Before Hermes executes a Coordinator handoff to Review, Hermes verifies mechanically that the proposed GREEN state is reviewable:
 
 - changes are within the intended implementation scope;
 - no staged changes were created by Coordinator;
 - RED test intent was not silently weakened;
-- the reported targeted `test_command` passes;
+- the latest verified targeted `test_command` from Testing passes;
 - if `full_test_command` is present, it passes;
 - otherwise `full_test_unavailable_reason` must clearly state why no full suite is available.
 
@@ -229,7 +231,7 @@ Hermes must:
 - invoke the agent requested by a valid Coordinator `HANDOFF`;
 - allow Coordinator `HANDOFF` destinations only to `testing` or `review`;
 - require a concrete `task` and non-empty `reason` for every Coordinator `HANDOFF`;
-- require `test_command` and exactly one of `full_test_command` or `full_test_unavailable_reason` before a Coordinator handoff to Review;
+- require exactly one of `full_test_command` or `full_test_unavailable_reason` before a Coordinator handoff to Review;
 - require a `question` for `AWAIT_USER_DECISION` and `reviewed_head` plus `draft=false` for `AWAIT_USER_MERGE`;
 - reject any agent result that includes `commit`;
 - reject specialist results that attempt to specify `next_agent`;
@@ -343,7 +345,7 @@ Expected statuses:
 - Testing: `RED_COMPLETE` or `BLOCKED`.
 - Review: `REVIEW_CLEAN`, `CHANGES_REQUIRED`, or `BLOCKED`.
 
-Coordinator `HANDOFF` must include `next_agent` (`testing` or `review`), a non-empty `task`, and a non-empty `reason`. A Review handoff must also include non-empty `test_command`, plus exactly one of `full_test_command` or `full_test_unavailable_reason`.
+Coordinator `HANDOFF` must include `next_agent` (`testing` or `review`), a non-empty `task`, and a non-empty `reason`. A Review handoff must also include exactly one of `full_test_command` or `full_test_unavailable_reason`.
 
 Testing `RED_COMPLETE` must include a non-empty `test_command`.
 

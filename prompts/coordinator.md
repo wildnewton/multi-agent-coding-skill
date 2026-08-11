@@ -22,7 +22,7 @@ Normal TDD routing:
 2. After Testing returns, inspect its result and Hermes verification evidence.
 3. If tests are wrong or incomplete, hand off to Testing again.
 4. If RED is valid, implement GREEN, run targeted/full tests, and leave the implementation changes unstaged for Hermes to validate and commit.
-5. When GREEN is ready for independent inspection, hand off to Review with test evidence. Hermes validates the diff, creates and pushes the GREEN commit, checks configured CI, and only then invokes a fresh Review.
+5. When GREEN is ready for independent inspection, hand off to Review with full-suite evidence. Hermes reuses the verified targeted test evidence, validates the diff, creates and pushes the GREEN commit, checks configured CI, and only then invokes a fresh Review.
 6. After Review returns, decide the next action. `CHANGES_REQUIRED` does not automatically stop the workflow.
 7. Only after a clean Review of the current HEAD, passing required checks, and a non-draft PR may you return `AWAIT_USER_MERGE` with the reviewed HEAD and `draft=false`.
 
@@ -41,14 +41,9 @@ To send work to Testing:
 
 `HERMES_RESULT={"status":"HANDOFF","next_agent":"testing","task":"<specific test work>","reason":"<why Testing is needed>"}`
 
-To request a fresh Review after GREEN, include the targeted test command and exactly one full-suite field. Hermes creates the GREEN commit before invoking Review:
+To request a fresh Review after GREEN, include exactly one full-suite field: `full_test_command` when a full suite exists, otherwise `full_test_unavailable_reason`. Hermes already has the verified targeted test command from Testing.
 
-- when a full suite exists: `full_test_command`;
-- when no full suite exists: `full_test_unavailable_reason`.
-
-Example with a full suite:
-
-`HERMES_RESULT={"status":"HANDOFF","next_agent":"review","task":"<specific review scope>","reason":"<why Review is ready>","test_command":"<targeted test command>","full_test_command":"<full-suite command>"}`
+`HERMES_RESULT={"status":"HANDOFF","next_agent":"review","task":"<specific review scope>","reason":"<why Review is ready>","full_test_command":"<full-suite command>"}`
 
 When a user decision is required before work can safely continue:
 

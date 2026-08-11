@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -52,6 +53,10 @@ class DirtyWorktreeError(RuntimeError):
     """Raised when an agent invocation does not start from a clean worktree."""
 
 
+class AgentRepositoryMutationError(RuntimeError):
+    """Raised when a Codex agent mutates git or remote repository state."""
+
+
 def _default_runner(command, cwd, input_text):
     return subprocess.run(
         command,
@@ -82,21 +87,77 @@ def _save_state(path: Path, state: dict) -> None:
     path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _ensure_clean_worktree(repo: Path) -> None:
+def _git(repo: Path, *args: str, allow_failure: bool = False) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
     completed = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=all"],
+        ["git", *args],
         cwd=repo,
         text=True,
         capture_output=True,
         check=False,
+        env=env,
     )
-    if completed.returncode != 0:
+    if completed.returncode != 0 and not allow_failure:
         detail = (completed.stderr or completed.stdout or "").strip()
-        raise DirtyWorktreeError(f"unable to verify clean worktree: {detail}")
+        raise DirtyWorktreeError(
+            f"unable to verify repository state with git {' '.join(args)}: {detail}"
+        )
+    return completed
+
+
+def _ensure_clean_worktree(repo: Path) -> None:
+    completed = _git(repo, "status", "--porcelain", "--untracked-files=all")
     if completed.stdout.strip():
         raise DirtyWorktreeError(
             "agent invocation requires a clean worktree; Hermes must commit or "
             "discard the previous agent's changes first"
+        )
+
+
+def _remote_branch_head(repo: Path, branch: str) -> tuple[bool, str | None]:
+    origin = _git(repo, "remote", "get-url", "origin", allow_failure=True)
+    if origin.returncode != 0 or not origin.stdout.strip() or not branch:
+        return False, None
+
+    remote = _git(
+        repo,
+        "ls-remote",
+        "--heads",
+        "origin",
+        f"refs/heads/{branch}",
+    )
+    line = remote.stdout.strip()
+    return True, line.split()[0] if line else None
+
+
+def _capture_repository_guard(repo: Path) -> dict:
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    branch = _git(repo, "branch", "--show-current").stdout.strip()
+    staged = _git(repo, "diff", "--cached", "--name-only").stdout.strip()
+    remote_checked, remote_head = _remote_branch_head(repo, branch)
+    return {
+        "head": head,
+        "branch": branch,
+        "staged": staged,
+        "remote_checked": remote_checked,
+        "remote_head": remote_head,
+    }
+
+
+def _verify_agent_did_not_mutate_repository(repo: Path, before: dict) -> None:
+    after = _capture_repository_guard(repo)
+    if (
+        after["head"] != before["head"]
+        or after["branch"] != before["branch"]
+        or after["staged"]
+    ):
+        raise AgentRepositoryMutationError(
+            "agent mutated local git state; Hermes exclusively owns git mutations"
+        )
+    if before["remote_checked"] and after["remote_head"] != before["remote_head"]:
+        raise AgentRepositoryMutationError(
+            "agent mutated the remote branch; Hermes exclusively owns remote mutations"
         )
 
 
@@ -192,6 +253,7 @@ def invoke_agent(
     if not repo.is_dir():
         raise ValueError(f"repo is not a directory: {repo}")
     _ensure_clean_worktree(repo)
+    repository_guard = _capture_repository_guard(repo)
 
     state_file = Path(state_file)
     prompt_dir = Path(prompt_dir)
@@ -214,6 +276,7 @@ def invoke_agent(
         include_role=session_id is None,
     )
     completed = runner(command, repo, prompt)
+    _verify_agent_did_not_mutate_repository(repo, repository_guard)
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
         raise CodexInvocationError(

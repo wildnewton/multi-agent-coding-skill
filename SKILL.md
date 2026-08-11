@@ -1,6 +1,6 @@
 ---
 name: multi-agent-coding
-description: Orchestrate a tests-first Codex workflow with Coordinator as the semantic routing hub and Hermes as the git-owning dispatcher/verifier.
+description: Orchestrate a tests-first coding workflow with Coordinator as the semantic routing hub and Hermes as the mechanical dispatcher/verifier.
 version: 0.3.0
 metadata:
   hermes:
@@ -42,7 +42,7 @@ This MVP remains sequential. Do not add parallel execution, webhooks, a database
 
 1. The target repository is available locally and has a clean worktree.
 2. `codex` is installed and authenticated.
-3. `gh` is installed and authenticated with permission to create/comment/update/merge pull requests in the target repository.
+3. `gh` is installed and authenticated with permission to create, comment on, and update pull requests in the target repository. Merge permission is required only if the user asks Hermes to perform the final merge.
 4. Create and switch to a dedicated feature branch before any code change.
 5. Locate the directory containing this `SKILL.md`; `run_codex.py` and `prompts/` are sibling paths.
 6. Choose a stable workflow id, normally `issue-<number>` or `pr-<number>`.

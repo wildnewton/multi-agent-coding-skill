@@ -31,6 +31,13 @@ AGENTS = {
 }
 
 RESULT_MARKER = "HERMES_RESULT="
+GIT_OWNERSHIP_POLICY = """Repository state policy:
+- Hermes owns all git and GitHub mutations.
+- You may inspect repository state with read-only commands such as git status, git diff, git log, git show, git rev-parse, and read-only gh queries.
+- Do not run git add, commit, push, restore, checkout, reset, rebase, merge, clean, or other commands that mutate git state.
+- Do not mutate remote repository state through gh, gh api, or another API.
+- Leave permitted file edits unstaged in the shared working tree for Hermes to validate and commit.
+"""
 
 
 class CodexInvocationError(RuntimeError):
@@ -39,6 +46,10 @@ class CodexInvocationError(RuntimeError):
 
 class InvalidAgentResult(RuntimeError):
     """Raised when an agent does not return the required result contract."""
+
+
+class DirtyWorktreeError(RuntimeError):
+    """Raised when an agent invocation does not start from a clean worktree."""
 
 
 def _default_runner(command, cwd, input_text):
@@ -69,6 +80,24 @@ def _load_state(path: Path, workflow_id: str) -> dict:
 def _save_state(path: Path, state: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _ensure_clean_worktree(repo: Path) -> None:
+    completed = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise DirtyWorktreeError(f"unable to verify clean worktree: {detail}")
+    if completed.stdout.strip():
+        raise DirtyWorktreeError(
+            "agent invocation requires a clean worktree; Hermes must commit or "
+            "discard the previous agent's changes first"
+        )
 
 
 def _iter_strings(value) -> Iterable[str]:
@@ -123,6 +152,7 @@ def _build_prompt(role_text: str, workflow_id: str, task: str, include_role: boo
         parts.append(role_text.strip())
     parts.extend(
         [
+            GIT_OWNERSHIP_POLICY.strip(),
             f"Workflow: {workflow_id}",
             "Current task:",
             task.strip(),
@@ -161,6 +191,7 @@ def invoke_agent(
     repo = Path(repo).resolve()
     if not repo.is_dir():
         raise ValueError(f"repo is not a directory: {repo}")
+    _ensure_clean_worktree(repo)
 
     state_file = Path(state_file)
     prompt_dir = Path(prompt_dir)
@@ -194,8 +225,16 @@ def invoke_agent(
     if status not in config["statuses"]:
         raise InvalidAgentResult(f"status {status!r} is invalid for agent {agent!r}")
 
+    if "commit" in result:
+        raise InvalidAgentResult(
+            "agents must not include commit; Hermes owns git commit creation"
+        )
+
     if agent in {"testing", "review"} and "next_agent" in result:
         raise InvalidAgentResult(f"agent {agent!r} is not allowed to choose next_agent")
+
+    if agent == "testing" and status == "RED_COMPLETE":
+        _require_nonempty_text(result, "test_command", "Testing RED_COMPLETE")
 
     if agent == "coordinator":
         if status == "HANDOFF":
@@ -206,8 +245,9 @@ def invoke_agent(
                 )
             _require_nonempty_text(result, "task", "Coordinator HANDOFF")
             if next_agent == "review":
-                for field in ("commit", "test_command"):
-                    _require_nonempty_text(result, field, "Coordinator review HANDOFF")
+                _require_nonempty_text(
+                    result, "test_command", "Coordinator review HANDOFF"
+                )
                 has_full_command = _has_nonempty_text(result, "full_test_command")
                 has_unavailable_reason = _has_nonempty_text(
                     result, "full_test_unavailable_reason"
@@ -230,6 +270,10 @@ def invoke_agent(
                 _require_nonempty_text(
                     result, "reviewed_head", "Coordinator AWAIT_USER_MERGE"
                 )
+                if result.get("draft") is not False:
+                    raise InvalidAgentResult(
+                        "Coordinator AWAIT_USER_MERGE must include draft=false"
+                    )
 
     if config["persistent"] and session_id is None:
         if not thread_id:

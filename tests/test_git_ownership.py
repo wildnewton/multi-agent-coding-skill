@@ -160,7 +160,7 @@ class GitOwnershipContractTests(unittest.TestCase):
             codex_stdout(
                 "coordinator-thread",
                 'HERMES_RESULT={"status":"HANDOFF","next_agent":"testing",'
-                '"task":"Add RED coverage"}',
+                '"task":"Add RED coverage","reason":"Coverage is missing"}',
             ),
             mutation=mutate,
         )
@@ -202,7 +202,8 @@ class GitOwnershipContractTests(unittest.TestCase):
         result, _ = self.invoke(
             "coordinator",
             'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
-            '"task":"Review verified GREEN","test_command":"pytest tests/test_feature.py",'
+            '"task":"Review verified GREEN","reason":"GREEN is ready",'
+            '"test_command":"pytest tests/test_feature.py",'
             '"full_test_command":"pytest"}',
         )
 
@@ -215,8 +216,8 @@ class GitOwnershipContractTests(unittest.TestCase):
             self.invoke(
                 "coordinator",
                 'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
-                '"task":"Review verified GREEN","commit":"abc123",'
-                '"test_command":"pytest tests/test_feature.py",'
+                '"task":"Review verified GREEN","reason":"GREEN is ready",'
+                '"commit":"abc123","test_command":"pytest tests/test_feature.py",'
                 '"full_test_command":"pytest"}',
             )
 

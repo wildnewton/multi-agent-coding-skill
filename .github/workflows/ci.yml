@@ -31,7 +31,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Run targeted script tests
-        run: python -m unittest tests/test_run_codex.py -v
+        run: >-
+          python -m unittest
+          tests/test_run_codex.py
+          tests/test_git_ownership.py
+          -v
 
       - name: Run full test suite
         run: python -m unittest discover -s tests -v

@@ -210,6 +210,41 @@ class InvokeAgentTests(unittest.TestCase):
         with self.assertRaises(InvalidAgentResult):
             self.invoke("coordinator", runner)
 
+    def test_review_handoff_accepts_full_test_unavailable_reason(self):
+        runner = FakeRunner(
+            [
+                codex_stdout(
+                    "C52",
+                    'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
+                    '"task":"Review this","commit":"bbb222",'
+                    '"test_command":"python -m unittest tests.test_feature",'
+                    '"full_test_unavailable_reason":"No full suite is configured"}',
+                )
+            ]
+        )
+
+        result = self.invoke("coordinator", runner)
+
+        self.assertEqual(result["status"], "HANDOFF")
+        self.assertEqual(result["next_agent"], "review")
+
+    def test_review_handoff_rejects_both_full_test_fields(self):
+        runner = FakeRunner(
+            [
+                codex_stdout(
+                    "C52",
+                    'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
+                    '"task":"Review this","commit":"bbb222",'
+                    '"test_command":"python -m unittest tests.test_feature",'
+                    '"full_test_command":"python -m unittest discover -s tests",'
+                    '"full_test_unavailable_reason":"No full suite is configured"}',
+                )
+            ]
+        )
+
+        with self.assertRaises(InvalidAgentResult):
+            self.invoke("coordinator", runner)
+
     def test_await_user_merge_requires_reviewed_head(self):
         runner = FakeRunner(
             [

@@ -25,9 +25,10 @@ Do not add parallel execution, webhooks, a database, generic adapters, or automa
 
 1. The target repository is available locally and has a clean worktree.
 2. `codex` is installed and authenticated.
-3. Create and switch to a dedicated feature branch before any code change.
-4. Locate the directory containing this `SKILL.md`; `run_codex.py` and `prompts/` are sibling paths.
-5. Choose a stable workflow id, normally `issue-<number>` or `pr-<number>`.
+3. `gh` is installed and authenticated with permission to comment on pull requests in the target repository.
+4. Create and switch to a dedicated feature branch before any code change.
+5. Locate the directory containing this `SKILL.md`; `run_codex.py` and `prompts/` are sibling paths.
+6. Choose a stable workflow id, normally `issue-<number>` or `pr-<number>`.
 
 ## Procedure
 
@@ -112,6 +113,12 @@ When and only when RED is verified, GREEN is verified, full tests/CI pass, and R
 Hermes publishes the handoff comment only after verification of the agent result and the relevant repository/test evidence. Agents must not post their own handoff comments. Their `HERMES_RESULT` is a machine handoff to Hermes; the PR comment is Hermes's human-readable, verified audit trail.
 
 Publish one new top-level PR Conversation comment for each completed phase. Do not edit a previous phase comment into the next phase.
+
+Render the appropriate template below into text, then from the target repository publish it with the authenticated GitHub CLI:
+
+```bash
+printf '%s\n' "$handoff_comment" | gh pr comment <pr-number> --body-file -
+```
 
 ### Testing handoff
 

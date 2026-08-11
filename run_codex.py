@@ -134,6 +134,12 @@ def _build_prompt(role_text: str, workflow_id: str, task: str, include_role: boo
     return "\n\n".join(parts).strip() + "\n"
 
 
+def _require_nonempty_text(result: dict, field: str, context: str) -> None:
+    value = result.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise InvalidAgentResult(f"{context} must include non-empty {field}")
+
+
 def invoke_agent(
     *,
     agent: str,
@@ -186,12 +192,30 @@ def invoke_agent(
     if agent in {"testing", "review"} and "next_agent" in result:
         raise InvalidAgentResult(f"agent {agent!r} is not allowed to choose next_agent")
 
-    if agent == "coordinator" and status == "HANDOFF":
-        if result.get("next_agent") not in {"testing", "review"}:
-            raise InvalidAgentResult("Coordinator HANDOFF next_agent must be testing or review")
-        task_text = result.get("task")
-        if not isinstance(task_text, str) or not task_text.strip():
-            raise InvalidAgentResult("Coordinator HANDOFF must include a non-empty task")
+    if agent == "coordinator":
+        if status == "HANDOFF":
+            next_agent = result.get("next_agent")
+            if next_agent not in {"testing", "review"}:
+                raise InvalidAgentResult(
+                    "Coordinator HANDOFF next_agent must be testing or review"
+                )
+            _require_nonempty_text(result, "task", "Coordinator HANDOFF")
+            if next_agent == "review":
+                for field in ("commit", "test_command", "full_test_command"):
+                    _require_nonempty_text(result, field, "Coordinator review HANDOFF")
+        else:
+            if "next_agent" in result:
+                raise InvalidAgentResult(
+                    f"Coordinator status {status!r} must not include next_agent"
+                )
+            if status == "AWAIT_USER_DECISION":
+                _require_nonempty_text(
+                    result, "question", "Coordinator AWAIT_USER_DECISION"
+                )
+            elif status == "AWAIT_USER_MERGE":
+                _require_nonempty_text(
+                    result, "reviewed_head", "Coordinator AWAIT_USER_MERGE"
+                )
 
     if config["persistent"] and session_id is None:
         if not thread_id:

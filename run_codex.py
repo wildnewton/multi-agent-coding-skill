@@ -21,7 +21,7 @@ AGENTS = {
     "coordinator": {
         "prompt": "coordinator.md",
         "persistent": True,
-        "statuses": {"GREEN_COMPLETE", "BLOCKED"},
+        "statuses": {"HANDOFF", "AWAIT_USER_DECISION", "AWAIT_USER_MERGE", "BLOCKED"},
     },
     "review": {
         "prompt": "review.md",
@@ -179,10 +179,20 @@ def invoke_agent(
         )
 
     thread_id, result = _parse_output(completed.stdout)
-    if result["status"] not in config["statuses"]:
-        raise InvalidAgentResult(
-            f"status {result['status']!r} is invalid for agent {agent!r}"
-        )
+    status = result["status"]
+    if status not in config["statuses"]:
+        raise InvalidAgentResult(f"status {status!r} is invalid for agent {agent!r}")
+
+    if agent in {"testing", "review"} and "next_agent" in result:
+        raise InvalidAgentResult(f"agent {agent!r} is not allowed to choose next_agent")
+
+    if agent == "coordinator" and status == "HANDOFF":
+        if result.get("next_agent") not in {"testing", "review"}:
+            raise InvalidAgentResult("Coordinator HANDOFF next_agent must be testing or review")
+        task_text = result.get("task")
+        if not isinstance(task_text, str) or not task_text.strip():
+            raise InvalidAgentResult("Coordinator HANDOFF must include a non-empty task")
+
     if config["persistent"] and session_id is None:
         if not thread_id:
             raise CodexInvocationError("Codex did not emit thread.started for new session")

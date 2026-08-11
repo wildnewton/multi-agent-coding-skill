@@ -14,14 +14,17 @@ PROMPTS = ROOT / "prompts"
 TESTING_RESULT = 'HERMES_RESULT={"status":"RED_COMPLETE","commit":"aaa111"}'
 COORDINATOR_RESULT = (
     'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
-    '"task":"Review the verified GREEN implementation"}'
+    '"task":"Review the verified GREEN implementation","commit":"bbb222",'
+    '"test_command":"python -m unittest tests.test_feature",'
+    '"full_test_command":"python -m unittest discover -s tests"}'
 )
 COORDINATOR_TESTING_RESULT = (
     'HERMES_RESULT={"status":"HANDOFF","next_agent":"testing",'
     '"task":"Add RED coverage for AC3"}'
 )
 COORDINATOR_USER_RESULT = (
-    'HERMES_RESULT={"status":"AWAIT_USER_MERGE","summary":"Ready to merge"}'
+    'HERMES_RESULT={"status":"AWAIT_USER_MERGE","summary":"Ready to merge",'
+    '"reviewed_head":"bbb222"}'
 )
 COORDINATOR_DECISION_RESULT = (
     'HERMES_RESULT={"status":"AWAIT_USER_DECISION",'
@@ -161,6 +164,7 @@ class InvokeAgentTests(unittest.TestCase):
         result = self.invoke("coordinator", runner)
 
         self.assertEqual(result["status"], "AWAIT_USER_MERGE")
+        self.assertEqual(result["reviewed_head"], "bbb222")
 
     def test_coordinator_can_await_user_decision(self):
         runner = FakeRunner([codex_stdout("C52", COORDINATOR_DECISION_RESULT)])
@@ -189,6 +193,47 @@ class InvokeAgentTests(unittest.TestCase):
                 codex_stdout(
                     "C52",
                     'HERMES_RESULT={"status":"HANDOFF","next_agent":"testing"}',
+                )
+            ]
+        )
+
+        with self.assertRaises(InvalidAgentResult):
+            self.invoke("coordinator", runner)
+
+    def test_review_handoff_requires_green_evidence(self):
+        runner = FakeRunner(
+            [
+                codex_stdout(
+                    "C52",
+                    'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
+                    '"task":"Review this"}',
+                )
+            ]
+        )
+
+        with self.assertRaises(InvalidAgentResult):
+            self.invoke("coordinator", runner)
+
+    def test_await_user_merge_requires_reviewed_head(self):
+        runner = FakeRunner(
+            [
+                codex_stdout(
+                    "C52",
+                    'HERMES_RESULT={"status":"AWAIT_USER_MERGE",'
+                    '"summary":"Ready"}',
+                )
+            ]
+        )
+
+        with self.assertRaises(InvalidAgentResult):
+            self.invoke("coordinator", runner)
+
+    def test_await_user_decision_requires_question(self):
+        runner = FakeRunner(
+            [
+                codex_stdout(
+                    "C52",
+                    'HERMES_RESULT={"status":"AWAIT_USER_DECISION"}',
                 )
             ]
         )
@@ -282,6 +327,7 @@ class RoutingTopologyContractTests(unittest.TestCase):
         self.assertIn('"next_agent":"review"', text)
         self.assertIn("AWAIT_USER_DECISION", text)
         self.assertIn("AWAIT_USER_MERGE", text)
+        self.assertIn("commit the implementation", text)
 
     def test_specialist_prompts_return_only_to_coordinator(self):
         for prompt_name in ("testing.md", "review.md"):

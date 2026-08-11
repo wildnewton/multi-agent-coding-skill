@@ -25,9 +25,10 @@ Do not add parallel execution, webhooks, a database, generic adapters, or automa
 
 1. The target repository is available locally and has a clean worktree.
 2. `codex` is installed and authenticated.
-3. Create and switch to a dedicated feature branch before any code change.
-4. Locate the directory containing this `SKILL.md`; `run_codex.py` and `prompts/` are sibling paths.
-5. Choose a stable workflow id, normally `issue-<number>` or `pr-<number>`.
+3. `gh` is installed and authenticated with permission to comment on pull requests in the target repository.
+4. Create and switch to a dedicated feature branch before any code change.
+5. Locate the directory containing this `SKILL.md`; `run_codex.py` and `prompts/` are sibling paths.
+6. Choose a stable workflow id, normally `issue-<number>` or `pr-<number>`.
 
 ## Procedure
 
@@ -53,7 +54,7 @@ Before continuing, Hermes must verify mechanically:
 
 If any RED verification fails, stop. Do not route to Coordinator.
 
-Push the branch and open a draft PR after a valid RED commit if no PR exists yet.
+Push the branch and open a draft PR after a valid RED commit if no PR exists yet. Then publish the verified Testing handoff comment described below before invoking Coordinator.
 
 ### 2. Coordinator / GREEN
 
@@ -76,7 +77,7 @@ Hermes must then verify mechanically:
 - the targeted test command passes;
 - the repository's full test suite / CI passes when available.
 
-If verification fails, stop and report the failure.
+If verification fails, stop and report the failure. After successful GREEN verification, publish the Coordinator handoff comment described below before invoking Review.
 
 ### 3. Fresh Review
 
@@ -94,8 +95,9 @@ Review is intentionally a new Codex session every time. It must not modify files
 
 For this MVP:
 
-- `REVIEW_CLEAN` -> continue to the merge gate.
-- `CHANGES_REQUIRED` or any other status -> stop and show the findings to the user. Do not yet implement an automatic repair/re-review loop.
+- `REVIEW_CLEAN` -> publish the Review handoff comment, then continue to the merge gate.
+- `CHANGES_REQUIRED` -> publish the Review handoff comment with the confirmed findings, then stop and show the findings to the user.
+- any other status -> stop. Do not yet implement an automatic repair/re-review loop.
 
 ### 4. Merge Gate
 
@@ -105,6 +107,63 @@ When and only when RED is verified, GREEN is verified, full tests/CI pass, and R
 2. Tell the user the PR is ready and identify the reviewed HEAD SHA.
 3. Ask whether to merge.
 4. Never merge without explicit user approval.
+
+## PR Handoff Comments
+
+Hermes publishes the handoff comment only after verification of the agent result and the relevant repository/test evidence. Agents must not post their own handoff comments. Their `HERMES_RESULT` is a machine handoff to Hermes; the PR comment is Hermes's human-readable, verified audit trail.
+
+Publish one new top-level PR Conversation comment for each completed phase. Do not edit a previous phase comment into the next phase.
+
+Render the appropriate template below into text, then from the target repository publish it with the authenticated GitHub CLI:
+
+```bash
+printf '%s\n' "$handoff_comment" | gh pr comment <pr-number> --body-file -
+```
+
+### Testing handoff
+
+```text
+### Testing handoff
+Status: RED verified
+Commit: <red-sha>
+Verification: <targeted test command> fails for the expected missing behavior; RED diff is test/fixture-only.
+Next: Coordinator
+```
+
+### Coordinator handoff
+
+```text
+### Coordinator handoff
+Status: GREEN verified
+Commit: <green-sha>
+Verification: targeted tests pass; full test suite / CI status: <result>.
+Next: Review
+```
+
+### Review handoff
+
+For a clean review:
+
+```text
+### Review handoff
+Status: REVIEW_CLEAN
+Reviewed HEAD: <head-sha>
+Verification: fresh Review session checked the current HEAD against acceptance criteria, RED tests, PR description, and relevant diff.
+Next: User merge decision
+```
+
+For confirmed defects, use the same heading and include the findings:
+
+```text
+### Review handoff
+Status: CHANGES_REQUIRED
+Reviewed HEAD: <head-sha>
+Verification: fresh Review session checked the current HEAD against acceptance criteria, RED tests, PR description, and relevant diff.
+Findings: <confirmed findings>
+Next: User decision; automatic repair/re-review is out of scope for this MVP.
+```
+
+Do not publish a successful handoff comment when Hermes's mechanical verification fails. Stop instead and report the verification failure.
 
 ## Agent Session Policy
 
@@ -140,6 +199,7 @@ Treat missing, malformed, unexpected, or contradictory results as failures. Do n
 - Do not resume a Review session; fresh context is deliberate.
 - Do not trust an agent's success claim without deterministic verification.
 - Do not invoke multiple coding agents concurrently against the same worktree in this MVP.
+- Do not let agents publish their own PR handoff comments; Hermes owns the verified audit trail.
 - Do not auto-merge.
 
 ## Verification
@@ -150,4 +210,4 @@ For this skill repository itself, run:
 python3 -m unittest discover -s tests -v
 ```
 
-For an end-to-end smoke test, choose a small real issue and confirm Hermes can complete Testing -> Coordinator -> Review without the user sending `your turn` between phases.
+For an end-to-end smoke test, choose a small real issue and confirm Hermes can complete Testing -> Coordinator -> Review without the user sending `your turn` between phases, while each verified phase leaves its own PR handoff comment.

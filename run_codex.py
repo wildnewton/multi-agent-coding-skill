@@ -140,6 +140,11 @@ def _require_nonempty_text(result: dict, field: str, context: str) -> None:
         raise InvalidAgentResult(f"{context} must include non-empty {field}")
 
 
+def _has_nonempty_text(result: dict, field: str) -> bool:
+    value = result.get(field)
+    return isinstance(value, str) and bool(value.strip())
+
+
 def invoke_agent(
     *,
     agent: str,
@@ -201,8 +206,17 @@ def invoke_agent(
                 )
             _require_nonempty_text(result, "task", "Coordinator HANDOFF")
             if next_agent == "review":
-                for field in ("commit", "test_command", "full_test_command"):
+                for field in ("commit", "test_command"):
                     _require_nonempty_text(result, field, "Coordinator review HANDOFF")
+                has_full_command = _has_nonempty_text(result, "full_test_command")
+                has_unavailable_reason = _has_nonempty_text(
+                    result, "full_test_unavailable_reason"
+                )
+                if has_full_command == has_unavailable_reason:
+                    raise InvalidAgentResult(
+                        "Coordinator review HANDOFF must include exactly one of "
+                        "full_test_command or full_test_unavailable_reason"
+                    )
         else:
             if "next_agent" in result:
                 raise InvalidAgentResult(

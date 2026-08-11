@@ -277,6 +277,13 @@ def invoke_agent(
     )
     completed = runner(command, repo, prompt)
     _verify_agent_did_not_mutate_repository(repo, repository_guard)
+    if agent == "review":
+        try:
+            _ensure_clean_worktree(repo)
+        except DirtyWorktreeError as exc:
+            raise AgentRepositoryMutationError(
+                "Review modified the worktree; Review must be read-only"
+            ) from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
         raise CodexInvocationError(

@@ -14,12 +14,13 @@ TESTING_RESULT = (
 COORDINATOR_RESULT = (
     'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
     '"task":"Review the verified GREEN implementation",'
+    '"reason":"GREEN implementation is ready for independent Review",'
     '"test_command":"python -m unittest tests.test_feature",'
     '"full_test_command":"python -m unittest discover -s tests"}'
 )
 COORDINATOR_TESTING_RESULT = (
     'HERMES_RESULT={"status":"HANDOFF","next_agent":"testing",'
-    '"task":"Add RED coverage for AC3"}'
+    '"task":"Add RED coverage for AC3","reason":"AC3 lacks RED coverage"}'
 )
 COORDINATOR_USER_RESULT = (
     'HERMES_RESULT={"status":"AWAIT_USER_MERGE","summary":"Ready to merge",'
@@ -195,7 +196,7 @@ class InvokeAgentTests(unittest.TestCase):
                 codex_stdout(
                     "C52",
                     'HERMES_RESULT={"status":"HANDOFF","next_agent":"user",'
-                    '"task":"ask a question"}',
+                    '"task":"ask a question","reason":"user input is required"}',
                 )
             ]
         )
@@ -208,7 +209,8 @@ class InvokeAgentTests(unittest.TestCase):
             [
                 codex_stdout(
                     "C52",
-                    'HERMES_RESULT={"status":"HANDOFF","next_agent":"testing"}',
+                    'HERMES_RESULT={"status":"HANDOFF","next_agent":"testing",'
+                    '"reason":"RED coverage is needed"}',
                 )
             ]
         )
@@ -236,7 +238,7 @@ class InvokeAgentTests(unittest.TestCase):
                 codex_stdout(
                     "C52",
                     'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
-                    '"task":"Review this"}',
+                    '"task":"Review this","reason":"GREEN is ready"}',
                 )
             ]
         )
@@ -250,7 +252,7 @@ class InvokeAgentTests(unittest.TestCase):
                 codex_stdout(
                     "C52",
                     'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
-                    '"task":"Review this",'
+                    '"task":"Review this","reason":"GREEN is ready",'
                     '"test_command":"python -m unittest tests.test_feature",'
                     '"full_test_unavailable_reason":"No full suite is configured"}',
                 )
@@ -268,7 +270,7 @@ class InvokeAgentTests(unittest.TestCase):
                 codex_stdout(
                     "C52",
                     'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
-                    '"task":"Review this",'
+                    '"task":"Review this","reason":"GREEN is ready",'
                     '"test_command":"python -m unittest tests.test_feature",'
                     '"full_test_command":"python -m unittest discover -s tests",'
                     '"full_test_unavailable_reason":"No full suite is configured"}',

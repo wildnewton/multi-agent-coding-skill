@@ -50,6 +50,4 @@ If the work cannot be completed safely:
 
 `HERMES_RESULT={"status":"BLOCKED","summary":"<reason>"}`
 
-Inability to write `.git/` is not a blocker because Hermes owns commits.
-
 Hermes will verify the RED evidence, create the RED commit, and return the result to Coordinator. Coordinator decides what happens next.

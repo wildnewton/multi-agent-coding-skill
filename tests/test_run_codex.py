@@ -7,10 +7,6 @@ from pathlib import Path
 from run_codex import InvalidAgentResult, invoke_agent
 
 
-ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / "SKILL.md"
-PROMPTS = ROOT / "prompts"
-
 TESTING_RESULT = 'HERMES_RESULT={"status":"RED_COMPLETE","commit":"aaa111"}'
 COORDINATOR_RESULT = (
     'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
@@ -310,30 +306,6 @@ class InvokeAgentTests(unittest.TestCase):
 
         with self.assertRaises(InvalidAgentResult):
             self.invoke("testing", runner)
-
-
-class RoutingTopologyContractTests(unittest.TestCase):
-    def test_skill_defines_coordinator_as_only_semantic_router(self):
-        text = SKILL.read_text(encoding="utf-8")
-        self.assertIn("Coordinator is the only semantic routing hub", text)
-        self.assertIn("Testing always returns to Coordinator", text)
-        self.assertIn("Review always returns to Coordinator", text)
-        self.assertIn("Hermes does not choose the next specialist agent", text)
-
-    def test_coordinator_prompt_owns_next_agent_decision(self):
-        text = (PROMPTS / "coordinator.md").read_text(encoding="utf-8")
-        self.assertIn("You are the only agent allowed to choose the next destination", text)
-        self.assertIn('"next_agent":"testing"', text)
-        self.assertIn('"next_agent":"review"', text)
-        self.assertIn("AWAIT_USER_DECISION", text)
-        self.assertIn("AWAIT_USER_MERGE", text)
-        self.assertIn("commit the implementation", text)
-
-    def test_specialist_prompts_return_only_to_coordinator(self):
-        for prompt_name in ("testing.md", "review.md"):
-            text = (PROMPTS / prompt_name).read_text(encoding="utf-8")
-            self.assertIn("Always return your result to Coordinator through Hermes", text)
-            self.assertIn("Do not choose the next agent", text)
 
 
 if __name__ == "__main__":

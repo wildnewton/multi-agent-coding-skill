@@ -121,14 +121,18 @@ Coordinator may:
 - hand off to Testing again when coverage is missing, incorrect, or needs clarification;
 - implement/fix production code when RED intent is sound;
 - return `AWAIT_USER_DECISION` when requirements cannot be safely inferred;
-- after implementation and local test execution, request Review with `HANDOFF -> review`.
+- after implementation, targeted/full test execution, and a GREEN commit, request Review with `HANDOFF -> review`.
+
+A Coordinator handoff to Review must include structured GREEN evidence: `commit`, `test_command`, and `full_test_command`.
 
 Before Hermes executes a Coordinator handoff to Review, Hermes verifies mechanically that the proposed GREEN state is reviewable:
 
-- the reported/current implementation commit exists and is current;
+- the reported GREEN `commit` exists and equals current `HEAD`;
+- there are no uncommitted tracked/staged changes (`git diff --quiet` and `git diff --cached --quiet`);
 - RED test intent was not silently weakened;
-- targeted tests pass;
-- the full available test suite / CI passes when available.
+- the reported targeted `test_command` passes;
+- the reported `full_test_command` passes, or explicitly records why no full suite is available;
+- CI passes when configured.
 
 If GREEN verification fails, do not invoke Review. Resume Coordinator with the failed verification evidence. Coordinator decides whether to fix implementation or route back to Testing.
 
@@ -155,25 +159,26 @@ For every valid Review result (`REVIEW_CLEAN`, `CHANGES_REQUIRED`, or `BLOCKED`)
 
 `CHANGES_REQUIRED` does not automatically stop the workflow. Coordinator decides whether to:
 
-- fix an implementation defect itself, then request another fresh Review;
+- fix an implementation defect itself, then commit/retest and request another fresh Review;
 - route missing/incorrect test coverage to Testing;
 - ask the user for a decision;
 - take another justified action within its role.
 
 ### 5. Coordinator -> User decision
 
-When Coordinator returns `AWAIT_USER_DECISION`, Hermes asks the specific question and stops specialist execution. When the user answers, resume the same Coordinator session with that answer and current workflow state.
+When Coordinator returns `AWAIT_USER_DECISION`, Hermes asks the specific question and stops specialist execution. `AWAIT_USER_DECISION` must contain a non-empty `question`. When the user answers, resume the same Coordinator session with that answer and current workflow state.
 
 Testing and Review must not ask the user directly as a routing decision.
 
 ### 6. Merge Gate
 
-Only Coordinator may declare `AWAIT_USER_MERGE`.
+Only Coordinator may declare `AWAIT_USER_MERGE`, and the result must contain `reviewed_head`.
 
 Before asking the user to merge, Hermes verifies mechanically:
 
-- Review returned `REVIEW_CLEAN` for the current HEAD;
-- current HEAD still equals the reviewed HEAD;
+- Review returned `REVIEW_CLEAN` for `reviewed_head`;
+- current HEAD still equals `reviewed_head`;
+- no tracked/staged changes have appeared since Review;
 - required targeted/full tests or CI are passing;
 - the PR description reflects the actual implementation and test evidence.
 
@@ -194,6 +199,9 @@ Hermes must:
 
 - invoke the agent requested by a valid Coordinator `HANDOFF`;
 - allow Coordinator `HANDOFF` destinations only to `testing` or `review`;
+- require a concrete `task` for every Coordinator `HANDOFF`;
+- require `commit`, `test_command`, and `full_test_command` before a Coordinator handoff to Review;
+- require a `question` for `AWAIT_USER_DECISION` and `reviewed_head` for `AWAIT_USER_MERGE`;
 - reject specialist results that attempt to specify `next_agent`;
 - return every Testing and Review result to Coordinator;
 - perform deterministic RED/GREEN/merge-gate checks;
@@ -283,7 +291,9 @@ Expected statuses:
 - Testing: `RED_COMPLETE` or `BLOCKED`.
 - Review: `REVIEW_CLEAN`, `CHANGES_REQUIRED`, or `BLOCKED`.
 
-Coordinator `HANDOFF` must include `next_agent` (`testing` or `review`) and a non-empty `task`.
+Coordinator `HANDOFF` must include `next_agent` (`testing` or `review`) and a non-empty `task`. A Review handoff must also include non-empty `commit`, `test_command`, and `full_test_command` evidence fields.
+
+`AWAIT_USER_DECISION` must include a non-empty `question`. `AWAIT_USER_MERGE` must include a non-empty `reviewed_head`.
 
 Testing and Review must not include `next_agent`.
 
@@ -296,6 +306,7 @@ Treat missing, malformed, unexpected, role-incompatible, or contradictory result
 - Do not let Testing implement production code.
 - Do not let Review modify files or directly contact Testing.
 - Do not let Coordinator silently rewrite or weaken RED test intent; route test corrections to Testing.
+- Do not request Review from an uncommitted worktree.
 - Do not resume a Review session; fresh context is deliberate.
 - Do not trust an agent's success claim without deterministic verification.
 - Do not invoke multiple coding agents concurrently against the same worktree in this MVP.

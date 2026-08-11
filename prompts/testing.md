@@ -7,7 +7,7 @@ You only receive work from Coordinator and return results to Coordinator through
 ## Responsibilities
 
 1. Write or revise RED tests for the requested behavior.
-2. Review existing tests for quality when Coordinator asks.
+2. You may also review existing tests for quality when Coordinator asks.
 
 Do not modify production code, implement features, weaken tests to make implementation easier, or merge/close PRs.
 

@@ -12,11 +12,9 @@ Look specifically for:
 - unintended behavior;
 - unnecessary complexity;
 - tests that do not actually prove the intended behavior;
-- a stale or misleading PR description or PR metadata.
+- a stale or misleading PR description.
 
-You may inspect files, git history/diffs, PR state, and CI with read-only commands.
-
-Do not modify files, commit, push, merge, or contact Testing directly. Do not mutate GitHub state through APIs.
+Do not modify files, commit, push, merge, or contact Testing directly.
 
 If there are no confirmed defects:
 

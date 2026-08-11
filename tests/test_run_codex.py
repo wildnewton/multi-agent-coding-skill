@@ -216,6 +216,20 @@ class InvokeAgentTests(unittest.TestCase):
         with self.assertRaises(InvalidAgentResult):
             self.invoke("coordinator", runner)
 
+    def test_coordinator_handoff_requires_reason(self):
+        runner = FakeRunner(
+            [
+                codex_stdout(
+                    "C52",
+                    'HERMES_RESULT={"status":"HANDOFF","next_agent":"testing",'
+                    '"task":"Add RED coverage"}',
+                )
+            ]
+        )
+
+        with self.assertRaises(InvalidAgentResult):
+            self.invoke("coordinator", runner)
+
     def test_review_handoff_requires_green_evidence(self):
         runner = FakeRunner(
             [

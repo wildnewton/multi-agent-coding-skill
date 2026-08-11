@@ -23,6 +23,10 @@ COORDINATOR_TESTING_RESULT = (
 COORDINATOR_USER_RESULT = (
     'HERMES_RESULT={"status":"AWAIT_USER_MERGE","summary":"Ready to merge"}'
 )
+COORDINATOR_DECISION_RESULT = (
+    'HERMES_RESULT={"status":"AWAIT_USER_DECISION",'
+    '"question":"Should AC3 include archived records?"}'
+)
 REVIEW_RESULT = 'HERMES_RESULT={"status":"REVIEW_CLEAN"}'
 
 
@@ -158,6 +162,13 @@ class InvokeAgentTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "AWAIT_USER_MERGE")
 
+    def test_coordinator_can_await_user_decision(self):
+        runner = FakeRunner([codex_stdout("C52", COORDINATOR_DECISION_RESULT)])
+
+        result = self.invoke("coordinator", runner)
+
+        self.assertEqual(result["status"], "AWAIT_USER_DECISION")
+
     def test_coordinator_rejects_invalid_handoff_target(self):
         runner = FakeRunner(
             [
@@ -184,6 +195,24 @@ class InvokeAgentTests(unittest.TestCase):
 
         with self.assertRaises(InvalidAgentResult):
             self.invoke("coordinator", runner)
+
+    def test_specialists_cannot_choose_next_agent(self):
+        cases = (
+            (
+                "testing",
+                'HERMES_RESULT={"status":"RED_COMPLETE","commit":"aaa111",'
+                '"next_agent":"review"}',
+            ),
+            (
+                "review",
+                'HERMES_RESULT={"status":"REVIEW_CLEAN","next_agent":"testing"}',
+            ),
+        )
+        for agent, output in cases:
+            with self.subTest(agent=agent):
+                runner = FakeRunner([codex_stdout(f"{agent}-52", output)])
+                with self.assertRaises(InvalidAgentResult):
+                    self.invoke(agent, runner)
 
     def test_review_always_starts_fresh_session(self):
         runner = FakeRunner(
@@ -251,6 +280,7 @@ class RoutingTopologyContractTests(unittest.TestCase):
         self.assertIn("You are the only agent allowed to choose the next destination", text)
         self.assertIn('"next_agent":"testing"', text)
         self.assertIn('"next_agent":"review"', text)
+        self.assertIn("AWAIT_USER_DECISION", text)
         self.assertIn("AWAIT_USER_MERGE", text)
 
     def test_specialist_prompts_return_only_to_coordinator(self):

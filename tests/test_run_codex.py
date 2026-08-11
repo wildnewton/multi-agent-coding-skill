@@ -15,7 +15,6 @@ COORDINATOR_RESULT = (
     'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
     '"task":"Review the verified GREEN implementation",'
     '"reason":"GREEN implementation is ready for independent Review",'
-    '"test_command":"python -m unittest tests.test_feature",'
     '"full_test_command":"python -m unittest discover -s tests"}'
 )
 COORDINATOR_TESTING_RESULT = (
@@ -253,7 +252,6 @@ class InvokeAgentTests(unittest.TestCase):
                     "C52",
                     'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
                     '"task":"Review this","reason":"GREEN is ready",'
-                    '"test_command":"python -m unittest tests.test_feature",'
                     '"full_test_unavailable_reason":"No full suite is configured"}',
                 )
             ]
@@ -271,7 +269,6 @@ class InvokeAgentTests(unittest.TestCase):
                     "C52",
                     'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
                     '"task":"Review this","reason":"GREEN is ready",'
-                    '"test_command":"python -m unittest tests.test_feature",'
                     '"full_test_command":"python -m unittest discover -s tests",'
                     '"full_test_unavailable_reason":"No full suite is configured"}',
                 )

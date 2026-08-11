@@ -168,6 +168,21 @@ class GitOwnershipContractTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "remote branch"):
             self.invoke_with_runner("coordinator", runner)
 
+    def test_review_cannot_modify_worktree_files(self):
+        def mutate(repo):
+            (repo / "README.md").write_text("review changed this\n", encoding="utf-8")
+
+        runner = FakeRunner(
+            codex_stdout(
+                "review-thread",
+                'HERMES_RESULT={"status":"REVIEW_CLEAN","summary":"clean"}',
+            ),
+            mutation=mutate,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "Review.*worktree"):
+            self.invoke_with_runner("review", runner)
+
     def test_red_complete_requires_test_command(self):
         with self.assertRaises(InvalidAgentResult):
             self.invoke(

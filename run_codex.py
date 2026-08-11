@@ -153,11 +153,11 @@ def _verify_agent_did_not_mutate_repository(repo: Path, before: dict) -> None:
         or after["staged"]
     ):
         raise AgentRepositoryMutationError(
-            "agent mutated local git state; Hermes exclusively owns git mutations"
+            "local git state changed during agent invocation; Hermes exclusively owns git mutations"
         )
     if before["remote_checked"] and after["remote_head"] != before["remote_head"]:
         raise AgentRepositoryMutationError(
-            "agent mutated the remote branch; Hermes exclusively owns remote mutations"
+            "remote branch changed during agent invocation; Hermes exclusively owns remote mutations"
         )
 
 

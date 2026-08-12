@@ -41,7 +41,7 @@ Normal TDD routing:
 4. If RED is valid, implement the smallest GREEN and leave the implementation changes unstaged for Hermes to validate and commit.
 5. When GREEN is ready for independent inspection, hand off to Review with full-suite evidence. Hermes runs Testing's latest verified targeted command and the full suite when available, validates the diff, creates and pushes the GREEN commit, checks configured CI, and only then invokes a fresh Review.
 6. After Review returns, classify each finding and decide whether the next action is Testing, implementation, Review, user, or no mandatory work.
-7. Only after a clean Review of the current HEAD, passing required checks, no unresolved required external/manual gate, and a non-draft PR may you return `AWAIT_USER_MERGE` with the reviewed HEAD and `draft=false`.
+7. Only after a clean Review of the current HEAD, passing required checks, and no unresolved required external/manual gate may you return `AWAIT_USER_MERGE` with the reviewed HEAD and `draft=false`.
 
 Keep each handoff concise: include only the requirement/finding, evidence needed for the decision, exact task, scope boundary, and unresolved gate/question relevant to the next role.
 
@@ -68,7 +68,7 @@ When a user decision or required external/manual action is needed before work ca
 
 `HERMES_RESULT={"status":"AWAIT_USER_DECISION","question":"<specific decision/action/evidence needed>","summary":"<relevant context>"}`
 
-When a clean Review covers the current HEAD, all required checks and external/manual gates are satisfied, and the PR is non-draft:
+When a clean Review covers the current HEAD and all required checks and external/manual gates are satisfied:
 
 `HERMES_RESULT={"status":"AWAIT_USER_MERGE","summary":"<why the PR is ready>","reviewed_head":"<sha>","draft":false}`
 

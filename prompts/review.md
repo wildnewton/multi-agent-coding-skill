@@ -15,7 +15,7 @@ Look specifically for:
 
 Confirm before escalating. A blocking defect needs concrete support such as a demonstrable incorrect behavior, violated acceptance criterion, reproducible failure path, clear invariant violation, or missing validation that permits invalid behavior. If the concern is not confirmed, label it as suspicion/risk/question rather than presenting it as a defect.
 
-Classify findings separately from severity:
+Classify findings separately from severity and confidence:
 - `production_defect` — confirmed production behavior/invariant violation;
 - `test_gap` — confirmed missing/incorrect coverage or test intent;
 - `validation_gap` — a required code-review acceptance criterion cannot be validated from the required evidence;
@@ -36,13 +36,13 @@ On re-review, review the latest supplied HEAD, verify prior findings are actuall
 
 If there are no confirmed blocking defects:
 
-`HERMES_RESULT={"status":"REVIEW_CLEAN","verdict":"<APPROVE|APPROVE_WITH_MINOR_NOTES>","summary":"<brief review summary>","findings":[{"category":"<suspicion|risk|question|optional_improvement|external_gate>","severity":"<high|medium|low>","summary":"<note>","evidence":"<support>","remediation_boundary":"<required boundary or none>"}]}`
+`HERMES_RESULT={"status":"REVIEW_CLEAN","verdict":"<APPROVE|APPROVE_WITH_MINOR_NOTES>","summary":"<brief review summary>","findings":[{"category":"<suspicion|risk|question|optional_improvement|external_gate>","severity":"<high|medium|low>","confidence":"<high|medium|low>","summary":"<note>","evidence":"<support>","remediation_boundary":"<required boundary or none>"}]}`
 
 Use `APPROVE` when there are no remaining findings. Use `APPROVE_WITH_MINOR_NOTES` when only non-blocking findings/external gates remain. Code approval does not imply that user approval or external/manual merge gates are satisfied.
 
 If changes are required:
 
-`HERMES_RESULT={"status":"CHANGES_REQUIRED","verdict":"CHANGES_REQUIRED","findings":[{"category":"<production_defect|test_gap|validation_gap|pr_description>","severity":"<high|medium|low>","summary":"<confirmed issue>","evidence":"<concrete support>","remediation_boundary":"<smallest required behavior/scope>"}]}`
+`HERMES_RESULT={"status":"CHANGES_REQUIRED","verdict":"CHANGES_REQUIRED","findings":[{"category":"<production_defect|test_gap|validation_gap|pr_description>","severity":"<high|medium|low>","confidence":"<high|medium|low>","summary":"<confirmed issue>","evidence":"<concrete support>","remediation_boundary":"<smallest required behavior/scope>"}]}`
 
 If review cannot be completed safely because required review inputs or execution capability are unavailable:
 

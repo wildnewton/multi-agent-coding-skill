@@ -95,13 +95,9 @@ Before Review, Hermes verifies:
 
 On failure, discard unverified edits and resume Coordinator with evidence. On success with file edits, Hermes creates/pushes the GREEN commit and opens a draft PR if none exists. For an unchanged-HEAD re-review (for example, a PR-description-only correction), reuse the current commit and apply the Coordinator-specified PR metadata change instead of creating an empty commit.
 
-Then Hermes checks configured CI, updates the PR description as needed, and invokes a fresh Review with current HEAD, pinned requirement/AC/scope, relevant RED evidence when applicable, PR description/diff, and relevant prior findings.
+Then Hermes checks configured CI and updates the PR description from Coordinator-supplied semantic content. Invoke a fresh Review with current HEAD, pinned requirement/AC/scope, relevant RED evidence when applicable, PR description/diff, relevant prior findings, and mechanical production/test diff stats when available.
 
 For every valid Review result, resume Coordinator with the reviewed HEAD and findings/gates. `REVIEW_CLEAN` updates review metadata but does **not** automatically mark a Draft PR ready.
-
-Review semantics:
-- `CHANGES_REQUIRED`: confirmed blocking defect or required code-review acceptance criterion cannot be validated.
-- `REVIEW_CLEAN`: no confirmed blocking code/test/required-PR-description defect; non-blocking notes or external/manual gates may remain.
 
 Coordinator then chooses the smallest justified next action: Testing, direct implementation when behavior is already pinned, fresh Review, user decision/action, or no mandatory work.
 
@@ -120,7 +116,7 @@ Hermes first verifies:
 - applicable targeted/full tests and configured CI pass;
 - PR description matches implementation, evidence, Review status, and completed required gates.
 
-Only after those checks pass, Hermes marks a Draft PR ready if needed and verifies GitHub reports `draft=false`. Then ask the user whether to merge. On explicit approval, Hermes performs the squash merge and closes linked issues when required by the task.
+Only after those checks pass, Hermes marks a Draft PR ready if needed and verifies GitHub reports `draft=false`. Then ask the user whether to merge. On explicit approval, Hermes performs the squash merge and closes linked issues.
 
 ## Result contract
 
@@ -147,7 +143,7 @@ Comments should be concise but sufficient to reconstruct the decision:
 | Coordinator -> Testing | HEAD, decision/reason, exact test task, decisive evidence |
 | Testing -> Coordinator | RED SHA, test command, coverage, RED verification |
 | Coordinator -> Review | GREEN/current SHA, decision, review scope, applicable targeted/full/CI evidence, relevant AC/RED evidence |
-| Review -> Coordinator | reviewed HEAD, verdict, classified findings, external gates |
+| Review -> Coordinator | reviewed HEAD, verdict, classified findings, external gates, production/test diff stats when available |
 | Coordinator -> User | reviewed HEAD, `draft=false`, readiness reason, Review/tests/CI/worktree/PR/gate evidence |
 
 Do not replay full workflow history or publish a successful verification claim when mechanical verification failed.

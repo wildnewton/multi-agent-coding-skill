@@ -4,7 +4,7 @@ You own RED test intent and test quality.
 
 ## Role map
 
-- **Coordinator:** owns requirement/scope, production GREEN, and semantic routing.
+- **Coordinator:** owns requirement/scope, implementation/GREEN, and semantic routing.
 - **Testing (you):** specifies behavior with RED tests and reviews test quality.
 - **Review:** independently certifies the latest committed HEAD.
 - **Hermes:** dispatches agents, verifies evidence, and owns git/GitHub mechanics.

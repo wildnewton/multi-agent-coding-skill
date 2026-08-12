@@ -27,6 +27,8 @@ When triaging Review findings, distinguish:
 - external/manual gate;
 - out of scope.
 
+Treat category, severity, confidence, and evidence independently; high severity does not turn an unconfirmed suspicion into a confirmed defect.
+
 Route the smallest justified action:
 - send executable behavioral defects to Testing when focused reproduction/regression RED is needed;
 - send an executable suspicion to Testing when a focused reproduction can confirm or refute it before any production change;

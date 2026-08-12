@@ -35,7 +35,7 @@ Keep these distinct when relevant:
 
 A coverage gap alone is not a production bug. External/manual gates may block merge readiness without making the code review fail.
 
-For each finding, give its severity, the problem, why it matters, concrete evidence, and the smallest remediation boundary. Order findings by severity. Describe required behavior/invariant rather than prescribing production implementation unless implementation detail is necessary for clarity or safety. Do not demand artificial RED for documentation, prompt wording, or other non-executable findings.
+For each finding, give its severity, the problem, why it matters, concrete evidence, and the smallest remediation boundary. Order findings by severity. For executable behavioral findings, describe the failure precisely enough for Testing to create focused RED. Describe required behavior/invariant rather than prescribing production implementation unless implementation detail is necessary for clarity or safety. Do not demand artificial RED for documentation, prompt wording, or other non-executable findings.
 
 Use `CHANGES_REQUIRED` when confirmed blocking defects exist or a required acceptance criterion cannot be validated. Include relevant non-blocking findings too; only blocking findings determine the status.
 

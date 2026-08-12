@@ -18,7 +18,7 @@ Use this skill when the user asks Hermes to implement a code change with the mul
 - **Coordinator:** owns requirement/scope, implementation/GREEN, finding triage, semantic routing, and merge-readiness judgment.
 - **Testing:** owns RED intent and test quality.
 - **Review:** independently reviews the full PR diff at the latest committed HEAD.
-- **Hermes:** owns dispatch, deterministic verification, git/GitHub mutation, PR audit trail, and final user-approved merge.
+- **Hermes:** dispatches agents, verifies mechanical workflow evidence, and owns git/GitHub mechanics, PR audit trail, and final user-approved merge.
 
 Coordinator, Testing, and Review are separate Codex CLI sessions. Coordinator and Testing persist per workflow; every Review is fresh.
 
@@ -73,15 +73,17 @@ For executable behavior changes, Coordinator pins requirement/scope/gates/missin
 
 A Testing handoff requires `next_agent=testing`, non-empty `task`, and non-empty `reason`.
 
-Testing may edit only tests, fixtures, and test helpers. On `RED_COMPLETE`, Hermes verifies:
+Testing may edit only tests, fixtures, and test helpers. `RED_COMPLETE` is Testing's semantic certification that the reported `test_command` covers the complete current RED set and that the observed failure is for the intended missing behavior.
+
+Hermes verifies only the mechanical workflow evidence:
 
 - changed files stay within the Testing boundary;
-- `test_command` runs the complete current RED set;
-- RED fails for the intended missing behavior, not broken setup or unrelated failure.
+- the reported `test_command` executes and exits non-zero;
+- the actual command output is captured for Coordinator.
 
-If valid, Hermes creates/pushes the RED commit and opens a draft PR after the first valid RED when none exists. Resume Coordinator with the Testing result, RED SHA, verification evidence, and current HEAD/PR state.
+If mechanical verification passes, Hermes creates/pushes the RED commit and opens a draft PR after the first RED when none exists. Resume Coordinator with the Testing result, RED SHA, actual test output, and current HEAD/PR state. Coordinator decides whether the RED evidence is semantically sufficient or should return to Testing.
 
-On `BLOCKED` or failed verification, restore the clean pre-invocation HEAD and resume Coordinator with the failure evidence.
+On `BLOCKED` or failed mechanical verification, restore the clean pre-invocation HEAD and resume Coordinator with the failure evidence.
 
 ### 3. GREEN -> Review -> Coordinator
 

@@ -42,10 +42,10 @@ Testing and Review always return to Coordinator and never choose the next agent.
 
 ## Global invariants
 
-- Hermes owns all git/GitHub mutation: branch/commit/push, restore/reset/clean/rebase/merge, PR creation/metadata/comments, Draft→Ready, and final merge. Agents may inspect git/GitHub read-only but must not mutate local or remote repository state, including through GitHub APIs.
+- Hermes owns all git/GitHub mutation: branch/commit/push, restore/reset/clean/rebase/merge, PR creation/metadata/comments, Draft→Ready, and final merge. Agents may inspect git/GitHub read-only but must not mutate local or remote repository state, including through GitHub APIs. Git/GitHub mutation is not agent work, so inability to perform it is not a valid `BLOCKED` reason.
 - Every Codex invocation starts from a clean worktree. Coordinator/Testing may leave only role-permitted unstaged edits; Review must leave the worktree unchanged.
 - Hermes verifies permitted edits before committing them. If an agent returns `BLOCKED`, an invalid result, or fails verification, Hermes discards that invocation's unverified edits and returns the evidence to Coordinator; it does not finish the agent's domain work.
-- Testing owns RED intent; Coordinator must route test corrections back rather than rewrite/weakening RED tests.
+- Testing owns RED intent; Coordinator routes test corrections back rather than rewriting or weakening RED tests.
 - Review owns fresh-eyes certification; Coordinator never self-certifies.
 - `REVIEW_CLEAN` certifies code review only. Required external/manual gates may remain open and still block merge readiness.
 - Never merge without explicit user approval.
@@ -116,7 +116,7 @@ Hermes first verifies:
 - targeted/full tests and configured CI pass;
 - PR description matches implementation, evidence, Review status, and completed required gates.
 
-Only after those checks pass, Hermes marks a Draft PR ready if needed and verifies GitHub reports `draft=false`. Then publish the merge-ready handoff, identify the reviewed HEAD, and ask the user whether to merge.
+Only after those checks pass, Hermes marks a Draft PR ready if needed and verifies GitHub reports `draft=false`. Then publish the merge-ready handoff, identify the reviewed HEAD, and ask the user whether to merge. On explicit approval, Hermes performs the squash merge and closes linked issues when required by the task.
 
 ## Result contract
 

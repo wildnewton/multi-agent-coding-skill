@@ -37,7 +37,7 @@ A coverage gap alone is not a production bug. External/manual gates may block me
 
 For each finding, give its severity, the problem, why it matters, concrete evidence, and the smallest remediation boundary. Order findings by severity. Describe required behavior/invariant rather than prescribing production implementation unless implementation detail is necessary for clarity or safety. Do not demand artificial RED for documentation, prompt wording, or other non-executable findings.
 
-Use `CHANGES_REQUIRED` when confirmed blocking defects exist or a required acceptance criterion cannot be validated:
+Use `CHANGES_REQUIRED` when confirmed blocking defects exist or a required acceptance criterion cannot be validated. Include relevant non-blocking findings too; only blocking findings determine the status.
 
 `HERMES_RESULT={"status":"CHANGES_REQUIRED","findings":[{"severity":"<high|medium|low>","type":"<production-defect|test-gap|suspicion|risk|question|optional-improvement|external-gate|pr-description>","summary":"<problem and impact>","evidence":"<concrete support>","remediation_boundary":"<smallest required correction>"}]}`
 

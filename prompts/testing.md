@@ -17,7 +17,7 @@ Treat tests as executable specification. Before editing, briefly list the cases 
 
 Write the smallest complete test set that proves the requested behavior:
 - core behavior plus meaningful edge/failure paths;
-- clear behavior-based tests, deterministic and independent;
+- one clear behavior per test; deterministic and independent;
 - no unnecessary implementation coupling, redundancy, or assertions.
 
 Do not modify production code or weaken tests to make GREEN easier. If the requirement is materially ambiguous, return `BLOCKED` rather than invent behavior.

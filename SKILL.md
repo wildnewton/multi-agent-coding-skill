@@ -55,7 +55,7 @@ Testing and Review always return to Coordinator and never choose the next agent.
 
 ### 1. Start with Coordinator
 
-Before any code edit, Hermes creates/switches to the dedicated feature branch. Invoke every role through the same runner:
+Before any repository edit, Hermes creates/switches to the dedicated feature branch. Invoke every role through the same runner:
 
 ```bash
 python3 <skill-dir>/run_codex.py \
@@ -90,8 +90,8 @@ Coordinator implements the smallest GREEN and leaves edits unstaged. A Review ha
 Before Review, Hermes verifies:
 
 - Coordinator did not stage changes;
-- when RED exists, its intent was not weakened and the verified targeted command passes;
-- the full suite passes, or the supplied absence reason is valid.
+- when RED exists, the verified targeted command passes;
+- the full suite passes, or a non-empty `full_test_unavailable_reason` was supplied.
 
 On failure, discard unverified edits and resume Coordinator with evidence. On success with file edits, Hermes creates/pushes the GREEN commit and opens a draft PR if none exists. For an unchanged-HEAD re-review (for example, a PR-description-only correction), reuse the current commit and apply the Coordinator-specified PR metadata change instead of creating an empty commit.
 
@@ -114,7 +114,7 @@ Hermes first verifies:
 - `REVIEW_CLEAN` covers `reviewed_head` and current HEAD still matches;
 - worktree is clean;
 - applicable targeted/full tests and configured CI pass;
-- PR description matches implementation, evidence, Review status, and completed required gates.
+- the PR description has not changed since that `REVIEW_CLEAN`.
 
 Only after those checks pass, Hermes marks a Draft PR ready if needed and verifies GitHub reports `draft=false`. Then ask the user whether to merge. On explicit approval, Hermes performs the squash merge and closes linked issues.
 

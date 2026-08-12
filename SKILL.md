@@ -99,7 +99,7 @@ On failure, discard unverified edits and resume Coordinator with evidence. On su
 
 Then Hermes checks configured CI and updates the PR description from Coordinator-supplied semantic content. Invoke a fresh Review with the issue/request reference, current HEAD, pinned requirement/AC/scope, relevant RED evidence when applicable, PR description/diff, relevant prior findings, and mechanical production/test diff stats when available.
 
-For every valid Review result, resume Coordinator with the reviewed HEAD and findings/gates. `REVIEW_CLEAN` updates review metadata but does **not** automatically mark a Draft PR ready.
+For every valid Review result, resume Coordinator with the reviewed HEAD and findings/gates. `REVIEW_CLEAN` does **not** automatically mark a Draft PR ready.
 
 Coordinator then chooses the smallest justified next action: Testing, direct implementation when behavior is already pinned, fresh Review, user decision/action, or no mandatory work.
 

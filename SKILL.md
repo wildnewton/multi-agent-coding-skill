@@ -68,8 +68,6 @@ Coordinator and Testing may leave only role-permitted unstaged file edits. Revie
 
 If an agent returns `BLOCKED`, an invalid result, or fails mechanical verification after leaving edits, Hermes must not complete the agent's work on its behalf. Record the evidence, discard the edits created since the clean pre-invocation state, restore a clean HEAD, and return the failure to Coordinator.
 
-Agents must not include `commit` in `HERMES_RESULT`; a commit SHA becomes authoritative only after Hermes creates/verifies it.
-
 ## State Machine
 
 Hermes starts or resumes Coordinator. Only Coordinator may request one of these semantic transitions:

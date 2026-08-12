@@ -53,20 +53,20 @@ Disposition labels:
 | Check PR description accuracy | **Shared** | Review judges semantic accuracy; Hermes/Coordinator performs metadata mutation. |
 | Post review as PR comments | **Hermes / SKILL** | Review returns machine result; Hermes publishes verified human-readable handoff. |
 | Comment title/checkpoint/HEAD formatting | **Hermes / SKILL** | Mechanical audit-trail concern. |
-| Findings grouped as Confirmed Defect / Risk / Question / Optional Improvement | **Change — Review** | Expand evidence taxonomy to production defect, test gap, validation gap, suspicion, risk, question, optional improvement, external gate, PR-description defect; severity remains separate. |
+| Findings grouped as Confirmed Defect / Risk / Question / Optional Improvement | **Change — Review** | Expand evidence taxonomy to production defect, test gap, validation gap, suspicion, risk, question, optional improvement, external gate, PR-description defect; severity and confidence remain separate. |
 | For each finding give problem, why it matters, smallest fix | **Change — Review** | Keep problem/evidence/impact; replace implementation prescription with smallest required behavior/remediation boundary unless implementation detail is necessary for safety/clarity. |
 | Line-change summary split production/tests | **Hermes / SKILL** | Mechanical diff statistics should come from the source of truth when needed, not consume Review judgment. |
 | Top-line approve / approve-with-minor-notes / changes-required verdict | **Review** | Keep and tighten: `CHANGES_REQUIRED` only for confirmed blockers or unvalidated required code-review AC; code approval can coexist with external/manual gates. |
 | Do not modify code/tests | **Shared** | Retain role awareness and mechanical read-only enforcement. |
 
-## Post-refinement scenario replay
+## Post-refinement static scenario replay
 
-The refined prompts/SKILL should produce these decisions without adding a new runtime status or agent role:
+The refined prompts/SKILL were checked against the curated scenarios without adding a benchmark framework or new runtime status:
 
 | Scenario | Expected result after refinement |
 |---|---|
 | S1 — pending freshness defect + parser risk | Review: blocking `production_defect` + `test_gap`, parser remains `risk`; Coordinator routes focused behavior to Testing, not parser work. |
-| S2 — KY/foreign interpretation later withdrawn | Review: unpinned nationality interpretation stays `question`/`suspicion`; Coordinator does not implement it. Once market-status rule is pinned, only the listing-status defect is routed to Testing. |
+| S2 — KY/foreign interpretation later withdrawn | The initial nationality-based suspicion does **not reproduce** against the corrected listing-market rule and deterministic OTC-listed foreign issuer `6741` evidence, so Review must withdraw it rather than preserve a blocker. Only the actual listing-status defect proceeds to Testing. |
 | S3 — reconnect/protocol/quota defects plus ACK risk/Abort question | Review: three blockers, plus non-blocking `risk`/`question`; Coordinator sends only executable blockers to Testing unless requirement evidence promotes the notes. |
 | S4 — terminal-event race / evidence classifier | Review: concrete violated behavior with `production_defect`; Coordinator requests focused RED and then smallest GREEN. |
 | S5 — code clean but Nova live probe outstanding | Review: `REVIEW_CLEAN` + `APPROVE_WITH_MINOR_NOTES` and `external_gate`; Coordinator does not return merge-ready until the required live evidence is supplied. PR may remain Draft while code review is clean. |

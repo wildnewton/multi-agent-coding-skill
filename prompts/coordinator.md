@@ -18,7 +18,7 @@ Before acting, pin the requirement, acceptance criteria, confirmed gap, scope, d
 Choose the smallest justified action:
 - **Testing:** before implementing executable behavior, when tests are wrong/incomplete, or when an executable defect/suspicion needs focused RED/reproduction. Do not manufacture RED for prompt/SKILL/docs/config-only changes; validate those directly. Never rewrite Testing-owned RED intent yourself.
 - **Implement:** write the smallest GREEN once behavior is pinned. Fix directly only when no new test intent is needed. You may run non-destructive diagnostics. Leave changes unstaged and identify the full-suite command, or why none exists.
-- **Review:** request a fresh Review only after GREEN is ready for Hermes verification/commit. Never self-certify.
+- **Review:** request a fresh Review only after GREEN is ready for Hermes verification/commit. For metadata-only correction, specify the semantic PR metadata change and reuse the current HEAD. Never self-certify.
 - **User:** ask only for a genuine product/domain decision or required external/manual action/evidence.
 - **No mandatory work:** for risks, questions, preferences, or out-of-scope findings unless requirement evidence makes them blocking.
 

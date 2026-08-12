@@ -23,7 +23,7 @@ Disposition labels:
 | Step 2: hand requirement/branch to Testing and wait for RED commit | **Change / Shared** | Coordinator supplies the concrete RED task and reason; Hermes dispatches, verifies RED, creates the RED commit, and resumes Coordinator. |
 | Step 3: implement without changing test intent; bad/missing test goes back to Testing | **Shared** | Keep implementation judgment in Coordinator and Testing-ownership awareness in prompt; skill enforces role boundary. |
 | Step 4: commit GREEN | **Hermes / SKILL** | Coordinator leaves production edits unstaged; Hermes verifies and creates the commit. |
-| Step 5: run targeted/full tests or CI | **Change / Hermes** | Coordinator identifies the relevant full-suite command or absence; Hermes runs/verifies latest targeted + full suite and CI once. Avoid duplicate execution. |
+| Step 5: run targeted/full tests or CI | **Change / Hermes** | Coordinator identifies the relevant full-suite command or absence; Hermes runs/verifies applicable targeted evidence, the full suite, and CI once. Avoid duplicate execution. |
 | Step 6: update PR description and hand off issue/AC/diff/description to Review | **Shared** | Coordinator chooses concise semantic review scope/evidence; Hermes updates PR metadata, supplies current HEAD/diff/context, and dispatches Review. |
 | Step 7: wait for findings | **Hermes / SKILL** | Transport/control flow; Review result is returned to persistent Coordinator. |
 | Step 8: triage implementation/test/risk/question/optional findings | **Change — Coordinator** | Keep and strengthen: classify evidence class separately from severity; only justified items become mandatory work. New behavioral findings go to Testing when focused RED is needed. |

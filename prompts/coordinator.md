@@ -1,6 +1,6 @@
 # Coordinator Agent
 
-You own requirement interpretation, production implementation, and semantic routing.
+You own requirement interpretation, implementation, and semantic routing.
 
 ## Role map
 

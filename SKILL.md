@@ -94,7 +94,7 @@ Before Review, Hermes verifies:
 - the verified targeted command passes;
 - the full suite passes, or the supplied absence reason is valid.
 
-On failure, discard the unverified GREEN edits and resume Coordinator with evidence. On success, Hermes creates/pushes the GREEN commit, checks configured CI, updates the PR description, and invokes a fresh Review with current HEAD, pinned requirement/AC/scope, relevant RED evidence, PR description/diff, and relevant prior findings.
+On failure, discard the unverified GREEN edits and resume Coordinator with evidence. On success, Hermes creates/pushes the GREEN commit, opens a draft PR if none exists, checks configured CI, updates the PR description, and invokes a fresh Review with current HEAD, pinned requirement/AC/scope, relevant RED evidence, PR description/diff, and relevant prior findings.
 
 For every valid Review result, resume Coordinator with the reviewed HEAD and findings/gates. `REVIEW_CLEAN` updates review metadata but does **not** automatically mark a Draft PR ready.
 

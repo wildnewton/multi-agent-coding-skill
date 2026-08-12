@@ -68,7 +68,7 @@ For normal code work, Coordinator pins requirement/scope/gates/missing evidence 
 
 ### 2. Coordinator -> Testing -> Coordinator
 
-A Testing handoff requires `next_agent=testing`, non-empty `task`, and non-empty `reason`. If a PR exists, publish the Coordinator handoff comment before dispatch.
+A Testing handoff requires `next_agent=testing`, non-empty `task`, and non-empty `reason`.
 
 Testing may edit only tests, fixtures, and test helpers. On `RED_COMPLETE`, Hermes verifies:
 
@@ -76,7 +76,7 @@ Testing may edit only tests, fixtures, and test helpers. On `RED_COMPLETE`, Herm
 - `test_command` runs the complete current RED set;
 - RED fails for the intended missing behavior, not broken setup or unrelated failure.
 
-If valid, Hermes creates/pushes the RED commit. Open a draft PR after the first valid RED when none exists, backfill the initial Coordinator handoff, publish the Testing handoff, then resume Coordinator with the Testing result, RED SHA, verification evidence, and current HEAD/PR state.
+If valid, Hermes creates/pushes the RED commit and opens a draft PR after the first valid RED when none exists. Resume Coordinator with the Testing result, RED SHA, verification evidence, and current HEAD/PR state.
 
 On `BLOCKED` or failed verification, restore the clean pre-invocation HEAD and resume Coordinator with the failure evidence.
 
@@ -91,9 +91,9 @@ Before Review, Hermes verifies:
 - the verified targeted command passes;
 - the full suite passes, or the supplied absence reason is valid.
 
-On failure, discard the unverified GREEN edits and resume Coordinator with evidence. On success, Hermes creates/pushes the GREEN commit, checks configured CI, updates the PR description, publishes the Coordinator -> Review handoff, and invokes a fresh Review with current HEAD, pinned requirement/AC/scope, relevant RED evidence, PR description/diff, and relevant prior findings.
+On failure, discard the unverified GREEN edits and resume Coordinator with evidence. On success, Hermes creates/pushes the GREEN commit, checks configured CI, updates the PR description, and invokes a fresh Review with current HEAD, pinned requirement/AC/scope, relevant RED evidence, PR description/diff, and relevant prior findings.
 
-For every valid Review result, Hermes publishes the Review handoff and resumes Coordinator with the reviewed HEAD and findings/gates. `REVIEW_CLEAN` updates review metadata but does **not** automatically mark a Draft PR ready.
+For every valid Review result, resume Coordinator with the reviewed HEAD and findings/gates. `REVIEW_CLEAN` updates review metadata but does **not** automatically mark a Draft PR ready.
 
 Review semantics:
 - `CHANGES_REQUIRED`: confirmed blocking defect or required code-review acceptance criterion cannot be validated.
@@ -116,7 +116,7 @@ Hermes first verifies:
 - targeted/full tests and configured CI pass;
 - PR description matches implementation, evidence, Review status, and completed required gates.
 
-Only after those checks pass, Hermes marks a Draft PR ready if needed and verifies GitHub reports `draft=false`. Then publish the merge-ready handoff, identify the reviewed HEAD, and ask the user whether to merge. On explicit approval, Hermes performs the squash merge and closes linked issues when required by the task.
+Only after those checks pass, Hermes marks a Draft PR ready if needed and verifies GitHub reports `draft=false`. Then ask the user whether to merge. On explicit approval, Hermes performs the squash merge and closes linked issues when required by the task.
 
 ## Result contract
 

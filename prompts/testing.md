@@ -20,7 +20,7 @@ Write the smallest complete test set that proves the requested behavior:
 - one clear behavior per test; deterministic and independent;
 - no unnecessary implementation coupling, redundancy, or assertions.
 
-Do not modify production code or weaken tests to make GREEN easier. If the requirement is materially ambiguous, return `BLOCKED` rather than invent behavior.
+Do not modify production code or weaken tests to make GREEN easier. Do not manufacture tests for prompt/SKILL/docs/config-only work with no executable behavior; report the mismatch instead. If the requirement is materially ambiguous, return `BLOCKED` rather than invent behavior.
 
 A valid RED fails for the intended missing behavior, not broken setup/imports/fixtures/environment or unrelated failures. `test_command` must run the complete current RED set for this change.
 

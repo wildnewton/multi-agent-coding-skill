@@ -89,7 +89,7 @@ Coordinator implements the smallest GREEN and leaves edits unstaged. A Review ha
 
 Before Review, Hermes verifies:
 
-- implementation scope is valid and Coordinator did not stage changes;
+- Coordinator did not stage changes;
 - when RED exists, its intent was not weakened and the verified targeted command passes;
 - the full suite passes, or the supplied absence reason is valid.
 

@@ -34,7 +34,7 @@ Testing and Review always return to Coordinator and never choose the next agent.
 
 ## Preconditions
 
-1. Target repository is local, on a dedicated feature branch, with a clean worktree.
+1. Target repository is available locally with a clean worktree.
 2. `codex` is installed/authenticated.
 3. `gh` is installed/authenticated for PR operations; merge permission is needed only for a user-approved final merge.
 4. `run_codex.py` and `prompts/` are siblings of this file.
@@ -54,7 +54,7 @@ Testing and Review always return to Coordinator and never choose the next agent.
 
 ### 1. Start with Coordinator
 
-Invoke Coordinator with the user request, acceptance criteria, repository/PR state, and relevant workflow evidence:
+Before any code edit, Hermes creates/switches to the dedicated feature branch. Then invoke Coordinator with the user request, acceptance criteria, repository/PR state, and relevant workflow evidence:
 
 ```bash
 python3 <skill-dir>/run_codex.py \

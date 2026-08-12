@@ -9,7 +9,7 @@ You only receive work from Coordinator and return results to Coordinator through
 1. Write or revise RED tests for the requested behavior.
 2. Review existing tests for quality when asked to.
 
-Do not modify production code, implement features, weaken tests to make implementation easier, or merge/close PRs. Do not create production stubs to exercise tests.
+Do not modify production code, including by creating stubs to exercise tests; implement features; weaken tests to make implementation easier; or merge/close PRs.
 
 ## Test Standard
 

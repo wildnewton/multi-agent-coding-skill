@@ -124,7 +124,7 @@ Testing owns test intent. It may modify tests, fixtures, or test-only helpers on
 When Testing returns `RED_COMPLETE`, Hermes verifies mechanically:
 
 - changed files are tests/fixtures/test-only helpers only for the target repository;
-- the reported targeted test command fails for the expected missing behavior, not because of broken test setup or unrelated failure.
+- the reported `test_command` covers the complete current RED set for the change and fails for the expected missing behavior, not because of broken test setup or unrelated failure.
 
 If RED verification passes, Hermes creates the RED commit from the validated test paths, pushes it, and records the resulting SHA.
 
@@ -148,16 +148,16 @@ Coordinator may:
 - hand off to Testing again when coverage is missing, incorrect, or needs clarification;
 - implement/fix production code when RED intent is sound;
 - return `AWAIT_USER_DECISION` when requirements cannot be safely inferred;
-- after implementation, all relevant verified targeted tests, and the full suite when available, request Review with `HANDOFF -> review`; Hermes creates the GREEN commit after verification.
+- after implementation and running Testing's latest verified `test_command` plus the full suite when available, request Review with `HANDOFF -> review`; Hermes creates the GREEN commit after verification.
 
-A Coordinator handoff to Review must include a non-empty `reason` and exactly one of `full_test_command` or `full_test_unavailable_reason`. The targeted commands come from verified Testing results.
+A Coordinator handoff to Review must include a non-empty `reason` and exactly one of `full_test_command` or `full_test_unavailable_reason`. The targeted command comes from the latest verified Testing result.
 
 Before Hermes executes a Coordinator handoff to Review, Hermes verifies mechanically that the proposed GREEN state is reviewable:
 
 - changes are within the intended implementation scope;
 - no staged changes were created by Coordinator;
 - RED test intent was not silently weakened;
-- all relevant verified targeted `test_command`s from Testing pass;
+- the latest verified `test_command` from Testing passes;
 - if `full_test_command` is present, it passes;
 - otherwise `full_test_unavailable_reason` must clearly state why no full suite is available.
 
@@ -207,7 +207,7 @@ Before asking the user to merge, Hermes verifies mechanically:
 - Review returned `REVIEW_CLEAN` for `reviewed_head`;
 - current HEAD still equals `reviewed_head`;
 - no tracked/staged/untracked changes have appeared since Review (`git status --porcelain` is empty);
-- all relevant targeted tests, the full suite when available, and configured CI are passing;
+- Testing's latest verified `test_command`, the full suite when available, and configured CI are passing;
 - the PR description reflects the actual implementation, test evidence, and Review status;
 - GitHub reports `draft=false`.
 

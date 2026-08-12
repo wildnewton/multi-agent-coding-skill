@@ -127,7 +127,7 @@ Every agent ends with exactly one `HERMES_RESULT={...}` line. Do not infer succe
   - `AWAIT_USER_DECISION`: non-empty `question`.
   - `AWAIT_USER_MERGE`: non-empty `reviewed_head`, `draft=false`.
 - **Testing:** `RED_COMPLETE` with non-empty `test_command`, or `BLOCKED`.
-- **Review:** `REVIEW_CLEAN`, `CHANGES_REQUIRED`, or `BLOCKED`. `CHANGES_REQUIRED` requires at least one blocking finding; `REVIEW_CLEAN` contains none and uses `APPROVE` or `APPROVE_WITH_MINOR_NOTES`. Findings follow the Review prompt schema.
+- **Review:** `REVIEW_CLEAN`, `CHANGES_REQUIRED`, or `BLOCKED`; verdict and finding semantics follow the Review prompt.
 - No agent may include `commit`. Testing/Review must not include `next_agent`.
 
 Treat malformed, contradictory, or role-incompatible specialist results as failures and return the evidence to Coordinator. Coordinator-result failures stop the workflow and are reported to the user.

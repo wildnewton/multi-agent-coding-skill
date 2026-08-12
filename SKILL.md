@@ -205,16 +205,17 @@ Testing and Review must not ask the user directly as a routing decision.
 
 Only Coordinator may declare `AWAIT_USER_MERGE`, and only when no required external/manual acceptance gate remains unresolved. The result must contain `reviewed_head` and explicit `draft=false`.
 
-On a valid `AWAIT_USER_MERGE`, if the PR is still Draft, Hermes marks it ready for review; then Hermes verifies mechanically:
+On a valid `AWAIT_USER_MERGE`, Hermes first verifies:
 
 - Review returned `REVIEW_CLEAN` for `reviewed_head`;
 - current HEAD still equals `reviewed_head`;
 - no tracked/staged/untracked changes have appeared since Review (`git status --porcelain` is empty);
 - Testing's latest verified `test_command`, the full suite when available, and configured CI are passing;
-- the PR description reflects the actual implementation, test evidence, Review status, and any completed required gates;
-- GitHub reports `draft=false`.
+- the PR description reflects the actual implementation, test evidence, Review status, and any completed required gates.
 
-If this gate fails, resume Coordinator with the failed evidence. Do not independently route to Testing or Review.
+Only after these checks pass, Hermes marks a Draft PR ready if needed and verifies GitHub reports `draft=false`.
+
+If any gate check fails, resume Coordinator with the failed evidence. Do not independently route to Testing or Review.
 
 If the gate passes:
 
@@ -243,7 +244,7 @@ Hermes must:
 - require a clean worktree before every Codex invocation;
 - create and push verified RED/GREEN commits itself;
 - own PR metadata updates, handoff comments, and draft/ready transitions;
-- mark a draft PR ready only after Coordinator declares valid `AWAIT_USER_MERGE`, not merely because Review returned `REVIEW_CLEAN`.
+- mark a draft PR ready only after Coordinator declares valid `AWAIT_USER_MERGE` and the other merge-gate checks pass, not merely because Review returned `REVIEW_CLEAN`.
 
 Hermes must not infer `Testing -> Review`, `Review -> Testing`, or `Review -> User` transitions on its own.
 

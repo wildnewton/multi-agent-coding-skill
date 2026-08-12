@@ -95,7 +95,7 @@ Before Review, Hermes verifies:
 
 On failure, discard unverified edits and resume Coordinator with evidence. On success with file edits, Hermes creates/pushes the GREEN commit and opens a draft PR if none exists. For an unchanged-HEAD re-review (for example, a PR-description-only correction), reuse the current commit and apply the Coordinator-specified PR metadata change instead of creating an empty commit.
 
-Then Hermes checks configured CI and updates the PR description from Coordinator-supplied semantic content. Invoke a fresh Review with current HEAD, pinned requirement/AC/scope, relevant RED evidence when applicable, PR description/diff, relevant prior findings, and mechanical production/test diff stats when available.
+Then Hermes checks configured CI and updates the PR description from Coordinator-supplied semantic content. Invoke a fresh Review with the issue/request reference, current HEAD, pinned requirement/AC/scope, relevant RED evidence when applicable, PR description/diff, relevant prior findings, and mechanical production/test diff stats when available.
 
 For every valid Review result, resume Coordinator with the reviewed HEAD and findings/gates. `REVIEW_CLEAN` updates review metadata but does **not** automatically mark a Draft PR ready.
 
@@ -135,6 +135,8 @@ Treat malformed, contradictory, or role-incompatible specialist results as failu
 ## PR handoff audit trail
 
 Hermes—not agents—publishes one new top-level PR comment for each verified handoff. Coordinator specialist handoffs are published before dispatch; the initial pre-PR Coordinator -> Testing handoff is backfilled after the first valid RED opens the draft PR.
+
+Use the heading `### <From> -> <To> handoff`; include the relevant HEAD/checkpoint in the body so the transition is mechanically attributable to a commit.
 
 Comments should be concise but sufficient to reconstruct the decision:
 

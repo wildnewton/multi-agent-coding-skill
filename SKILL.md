@@ -49,7 +49,7 @@ This MVP remains sequential. Do not add parallel execution, webhooks, a database
 
 ## Git Ownership Invariant
 
-Hermes owns all repository-state mutation:
+Hermes owns all git/GitHub mutation:
 
 - branch creation/switching;
 - `git add`, commit, push, restore/reset/clean/rebase/merge when required;
@@ -148,24 +148,22 @@ Coordinator may:
 - hand off to Testing again when coverage is missing, incorrect, or needs clarification;
 - implement/fix production code when RED intent is sound;
 - return `AWAIT_USER_DECISION` when requirements cannot be safely inferred;
-- after implementation and targeted/full test execution, request Review with `HANDOFF -> review`; Hermes creates the GREEN commit after verification.
+- after implementation, all relevant verified targeted tests, and the full suite when available, request Review with `HANDOFF -> review`; Hermes creates the GREEN commit after verification.
 
-A Coordinator handoff to Review must include a non-empty `reason` and exactly one of `full_test_command` or `full_test_unavailable_reason`. The targeted command comes from the verified Testing result.
+A Coordinator handoff to Review must include a non-empty `reason` and exactly one of `full_test_command` or `full_test_unavailable_reason`. The targeted commands come from verified Testing results.
 
 Before Hermes executes a Coordinator handoff to Review, Hermes verifies mechanically that the proposed GREEN state is reviewable:
 
 - changes are within the intended implementation scope;
 - no staged changes were created by Coordinator;
 - RED test intent was not silently weakened;
-- the latest verified targeted `test_command` from Testing passes;
+- all relevant verified targeted `test_command`s from Testing pass;
 - if `full_test_command` is present, it passes;
 - otherwise `full_test_unavailable_reason` must clearly state why no full suite is available.
 
 If local GREEN verification fails, do not invoke Review. Discard the unverified implementation edits back to the clean pre-invocation HEAD and resume Coordinator with the failed verification evidence. Coordinator decides whether to fix implementation or route back to Testing.
 
-If local GREEN verification succeeds, Hermes creates and pushes the GREEN commit, waits for configured CI and requires it to pass, and updates the PR description to reflect the actual RED/GREEN state. If push or CI verification fails, do not invoke Review; resume Coordinator with the failed verification evidence at the clean committed HEAD.
-
-If GREEN verification succeeds, publish the descriptive Coordinator -> Review handoff comment with the GREEN commit/test/CI evidence and invoke a fresh Review.
+After local GREEN verification succeeds, Hermes creates and pushes the GREEN commit, waits for configured CI, and updates the PR description to reflect the actual RED/GREEN state. If push or CI verification fails, do not invoke Review; resume Coordinator with the failed verification evidence at the clean committed HEAD. Otherwise publish the descriptive Coordinator -> Review handoff comment with the GREEN commit/test/CI evidence and invoke a fresh Review.
 
 ### 4. Execute Coordinator -> Review
 
@@ -209,7 +207,7 @@ Before asking the user to merge, Hermes verifies mechanically:
 - Review returned `REVIEW_CLEAN` for `reviewed_head`;
 - current HEAD still equals `reviewed_head`;
 - no tracked/staged/untracked changes have appeared since Review (`git status --porcelain` is empty);
-- required targeted/full tests and configured CI are passing;
+- all relevant targeted tests, the full suite when available, and configured CI are passing;
 - the PR description reflects the actual implementation, test evidence, and Review status;
 - GitHub reports `draft=false`.
 

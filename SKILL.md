@@ -44,8 +44,9 @@ Testing and Review always return to Coordinator and never choose the next agent.
 
 - Hermes owns all git/GitHub mutation: branch/commit/push, restore/reset/clean/rebase/merge, PR creation/metadata/comments, Draft→Ready, and final merge. Agents may inspect git/GitHub read-only but must not mutate local or remote repository state, including through GitHub APIs. Git/GitHub mutation is not agent work, so inability to perform it is not a valid `BLOCKED` reason.
 - Every Codex invocation starts from a clean worktree. Coordinator/Testing may leave only role-permitted unstaged edits; Review must leave the worktree unchanged.
-- Hermes verifies permitted edits before committing them. If an agent returns `BLOCKED`, an invalid result, or fails verification, Hermes discards that invocation's unverified edits and returns the evidence to Coordinator; it does not finish the agent's domain work.
+- Hermes verifies permitted edits before committing them. On `BLOCKED`, invalid results, or any verification/git/CI failure, restore a clean state when needed and return the evidence to Coordinator; Hermes never finishes agent domain work or chooses a replacement route.
 - Testing owns RED intent; Coordinator routes test corrections back rather than rewriting or weakening RED tests.
+- RED is for executable behavior. Do not manufacture automated contract tests for prompt/SKILL/docs/config-only changes; review them directly and validate through real execution when applicable.
 - Review owns fresh-eyes certification; Coordinator never self-certifies.
 - `REVIEW_CLEAN` certifies code review only. Required external/manual gates may remain open and still block merge readiness.
 - Never merge without explicit user approval.
@@ -54,17 +55,19 @@ Testing and Review always return to Coordinator and never choose the next agent.
 
 ### 1. Start with Coordinator
 
-Before any code edit, Hermes creates/switches to the dedicated feature branch. Then invoke Coordinator with the user request, acceptance criteria, repository/PR state, and relevant workflow evidence:
+Before any code edit, Hermes creates/switches to the dedicated feature branch. Invoke every role through the same runner:
 
 ```bash
 python3 <skill-dir>/run_codex.py \
-  --agent coordinator \
+  --agent <coordinator|testing|review> \
   --workflow <workflow-id> \
   --repo <target-repo> \
-  --task '<request + acceptance criteria + current evidence>'
+  --task '<role-specific task + current evidence>'
 ```
 
-For normal code work, Coordinator pins requirement/scope/gates/missing evidence and normally routes first to Testing. If safe test design needs a real user decision or external/manual action, Coordinator may return `AWAIT_USER_DECISION` instead.
+Start with Coordinator using the user request, acceptance criteria, repository/PR state, and relevant workflow evidence.
+
+For executable behavior changes, Coordinator pins requirement/scope/gates/missing evidence and normally routes first to Testing. Prompt/SKILL/docs/config-only changes do not require manufactured RED. If safe work needs a real user decision or external/manual action, Coordinator may return `AWAIT_USER_DECISION` instead.
 
 ### 2. Coordinator -> Testing -> Coordinator
 
@@ -127,7 +130,7 @@ Every agent ends with exactly one `HERMES_RESULT={...}` line. Do not infer succe
   - `AWAIT_USER_DECISION`: non-empty `question`.
   - `AWAIT_USER_MERGE`: non-empty `reviewed_head`, `draft=false`.
 - **Testing:** `RED_COMPLETE` with non-empty `test_command`, or `BLOCKED`.
-- **Review:** `REVIEW_CLEAN`, `CHANGES_REQUIRED`, or `BLOCKED`.
+- **Review:** `REVIEW_CLEAN`, `CHANGES_REQUIRED`, or `BLOCKED`. `CHANGES_REQUIRED` requires at least one blocking finding; `REVIEW_CLEAN` contains none and uses `APPROVE` or `APPROVE_WITH_MINOR_NOTES`. Findings follow the Review prompt schema.
 - No agent may include `commit`. Testing/Review must not include `next_agent`.
 
 Treat malformed, contradictory, or role-incompatible results as failures and return the evidence to Coordinator.

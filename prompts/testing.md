@@ -34,6 +34,8 @@ Run the targeted tests and confirm they fail for the intended missing behavior, 
 
 A failing test is valid RED only when it fails for the right reason.
 
+The reported `test_command` must run the complete current RED set for this change, not just tests added in the latest Testing iteration.
+
 Leave only test/test-fixture/test-helper changes unstaged for Hermes to validate and commit as the RED commit.
 
 ## Test Review

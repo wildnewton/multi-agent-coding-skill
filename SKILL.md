@@ -17,7 +17,7 @@ Use this skill when the user asks Hermes to implement a code change with the mul
 
 - **Coordinator:** owns requirement/scope, implementation/GREEN, finding triage, semantic routing, and merge-readiness judgment.
 - **Testing:** owns RED intent and test quality.
-- **Review:** independently certifies the latest committed HEAD.
+- **Review:** independently reviews the full PR diff at the latest committed HEAD.
 - **Hermes:** owns dispatch, deterministic verification, git/GitHub mutation, PR audit trail, and final user-approved merge.
 
 Coordinator, Testing, and Review are separate Codex CLI sessions. Coordinator and Testing persist per workflow; every Review is fresh.

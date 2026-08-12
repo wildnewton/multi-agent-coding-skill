@@ -29,6 +29,7 @@ When triaging Review findings, distinguish:
 
 Route the smallest justified action:
 - send executable behavioral defects to Testing when focused reproduction/regression RED is needed;
+- send an executable suspicion to Testing when a focused reproduction can confirm or refute it before any production change;
 - fix production directly only when the required behavior is already pinned by valid RED/requirement evidence and no new test intent is needed;
 - take no mandatory action on a risk, question, preference, or out-of-scope item unless requirement evidence makes it blocking;
 - ask the user only for a genuine product/domain decision or required external/manual action/evidence;

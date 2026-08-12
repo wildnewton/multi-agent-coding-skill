@@ -18,6 +18,7 @@ Confirm before escalating. A blocking defect needs concrete support such as a de
 Classify findings separately from severity:
 - `production_defect` — confirmed production behavior/invariant violation;
 - `test_gap` — confirmed missing/incorrect coverage or test intent;
+- `validation_gap` — a required code-review acceptance criterion cannot be validated from the required evidence;
 - `suspicion` — plausible but not yet reproduced/confirmed;
 - `risk` — non-blocking risk;
 - `question` — unresolved clarification that is not itself a confirmed defect;
@@ -41,7 +42,7 @@ Use `APPROVE` when there are no remaining findings. Use `APPROVE_WITH_MINOR_NOTE
 
 If changes are required:
 
-`HERMES_RESULT={"status":"CHANGES_REQUIRED","verdict":"CHANGES_REQUIRED","findings":[{"category":"<production_defect|test_gap|pr_description>","severity":"<high|medium|low>","summary":"<confirmed issue>","evidence":"<concrete support>","remediation_boundary":"<smallest required behavior/scope>"}]}`
+`HERMES_RESULT={"status":"CHANGES_REQUIRED","verdict":"CHANGES_REQUIRED","findings":[{"category":"<production_defect|test_gap|validation_gap|pr_description>","severity":"<high|medium|low>","summary":"<confirmed issue>","evidence":"<concrete support>","remediation_boundary":"<smallest required behavior/scope>"}]}`
 
 If review cannot be completed safely because required review inputs or execution capability are unavailable:
 

@@ -66,9 +66,11 @@ The refined prompts/SKILL were checked against the curated scenarios without add
 | Scenario | Expected result after refinement |
 |---|---|
 | S1 — pending freshness defect + parser risk | Review: blocking `production_defect` + `test_gap`, parser remains `risk`; Coordinator routes focused behavior to Testing, not parser work. |
-| S2 — KY/foreign interpretation later withdrawn | The initial nationality-based suspicion does **not reproduce** against the corrected listing-market rule and deterministic OTC-listed foreign issuer `6741` evidence, so Review must withdraw it rather than preserve a blocker. Only the actual listing-status defect proceeds to Testing. |
+| S2 — KY/foreign interpretation later withdrawn | The initial nationality interpretation is disproven by the corrected listing-market requirement and deterministic OTC-listed foreign issuer `6741` evidence, so Review must withdraw it rather than preserve a blocker. Only the actual listing-status defect proceeds to Testing. |
 | S3 — reconnect/protocol/quota defects plus ACK risk/Abort question | Review: three blockers, plus non-blocking `risk`/`question`; Coordinator sends only executable blockers to Testing unless requirement evidence promotes the notes. |
 | S4 — terminal-event race / evidence classifier | Review: concrete violated behavior with `production_defect`; Coordinator requests focused RED and then smallest GREEN. |
 | S5 — code clean but Nova live probe outstanding | Review: `REVIEW_CLEAN` + `APPROVE_WITH_MINOR_NOTES` and `external_gate`; Coordinator does not return merge-ready until the required live evidence is supplied. PR may remain Draft while code review is clean. |
 
 No scenario requires a new routing status. Existing `REVIEW_CLEAN`, `CHANGES_REQUIRED`, `BLOCKED`, `AWAIT_USER_DECISION`, and `AWAIT_USER_MERGE` are sufficient when judgment and gate semantics are explicit.
+
+**Remaining evaluation gap:** S2 tests false certainty through a disproven requirement interpretation; it is not a true attempted reproduction that fails to reproduce. Issue #6's explicit non-reproduction scenario acceptance criterion remains open until a real evidence-backed case is added.

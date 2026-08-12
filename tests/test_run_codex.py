@@ -7,20 +7,23 @@ from pathlib import Path
 from run_codex import InvalidAgentResult, invoke_agent
 
 
-TESTING_RESULT = 'HERMES_RESULT={"status":"RED_COMPLETE","commit":"aaa111"}'
+TESTING_RESULT = (
+    'HERMES_RESULT={"status":"RED_COMPLETE",'
+    '"test_command":"python -m unittest tests.test_feature","summary":"RED"}'
+)
 COORDINATOR_RESULT = (
     'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
-    '"task":"Review the verified GREEN implementation","commit":"bbb222",'
-    '"test_command":"python -m unittest tests.test_feature",'
+    '"task":"Review the verified GREEN implementation",'
+    '"reason":"GREEN implementation is ready for independent Review",'
     '"full_test_command":"python -m unittest discover -s tests"}'
 )
 COORDINATOR_TESTING_RESULT = (
     'HERMES_RESULT={"status":"HANDOFF","next_agent":"testing",'
-    '"task":"Add RED coverage for AC3"}'
+    '"task":"Add RED coverage for AC3","reason":"AC3 lacks RED coverage"}'
 )
 COORDINATOR_USER_RESULT = (
     'HERMES_RESULT={"status":"AWAIT_USER_MERGE","summary":"Ready to merge",'
-    '"reviewed_head":"bbb222"}'
+    '"reviewed_head":"bbb222","draft":false}'
 )
 COORDINATOR_DECISION_RESULT = (
     'HERMES_RESULT={"status":"AWAIT_USER_DECISION",'
@@ -71,6 +74,22 @@ class InvokeAgentTests(unittest.TestCase):
             (self.prompts / f"{role}.md").write_text(
                 f"ROLE:{role}\n", encoding="utf-8"
             )
+
+        self._git("init")
+        self._git("config", "user.email", "tests@example.com")
+        self._git("config", "user.name", "Test User")
+        (self.repo / "README.md").write_text("clean\n", encoding="utf-8")
+        self._git("add", "README.md")
+        self._git("commit", "-m", "initial")
+
+    def _git(self, *args):
+        return subprocess.run(
+            ["git", *args],
+            cwd=self.repo,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
 
     def invoke(self, agent, runner, task="do the task"):
         return invoke_agent(
@@ -161,6 +180,7 @@ class InvokeAgentTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "AWAIT_USER_MERGE")
         self.assertEqual(result["reviewed_head"], "bbb222")
+        self.assertIs(result["draft"], False)
 
     def test_coordinator_can_await_user_decision(self):
         runner = FakeRunner([codex_stdout("C52", COORDINATOR_DECISION_RESULT)])
@@ -175,7 +195,7 @@ class InvokeAgentTests(unittest.TestCase):
                 codex_stdout(
                     "C52",
                     'HERMES_RESULT={"status":"HANDOFF","next_agent":"user",'
-                    '"task":"ask a question"}',
+                    '"task":"ask a question","reason":"user input is required"}',
                 )
             ]
         )
@@ -188,7 +208,22 @@ class InvokeAgentTests(unittest.TestCase):
             [
                 codex_stdout(
                     "C52",
-                    'HERMES_RESULT={"status":"HANDOFF","next_agent":"testing"}',
+                    'HERMES_RESULT={"status":"HANDOFF","next_agent":"testing",'
+                    '"reason":"RED coverage is needed"}',
+                )
+            ]
+        )
+
+        with self.assertRaises(InvalidAgentResult):
+            self.invoke("coordinator", runner)
+
+    def test_coordinator_handoff_requires_reason(self):
+        runner = FakeRunner(
+            [
+                codex_stdout(
+                    "C52",
+                    'HERMES_RESULT={"status":"HANDOFF","next_agent":"testing",'
+                    '"task":"Add RED coverage"}',
                 )
             ]
         )
@@ -202,7 +237,7 @@ class InvokeAgentTests(unittest.TestCase):
                 codex_stdout(
                     "C52",
                     'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
-                    '"task":"Review this"}',
+                    '"task":"Review this","reason":"GREEN is ready"}',
                 )
             ]
         )
@@ -216,8 +251,7 @@ class InvokeAgentTests(unittest.TestCase):
                 codex_stdout(
                     "C52",
                     'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
-                    '"task":"Review this","commit":"bbb222",'
-                    '"test_command":"python -m unittest tests.test_feature",'
+                    '"task":"Review this","reason":"GREEN is ready",'
                     '"full_test_unavailable_reason":"No full suite is configured"}',
                 )
             ]
@@ -234,8 +268,7 @@ class InvokeAgentTests(unittest.TestCase):
                 codex_stdout(
                     "C52",
                     'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
-                    '"task":"Review this","commit":"bbb222",'
-                    '"test_command":"python -m unittest tests.test_feature",'
+                    '"task":"Review this","reason":"GREEN is ready",'
                     '"full_test_command":"python -m unittest discover -s tests",'
                     '"full_test_unavailable_reason":"No full suite is configured"}',
                 )
@@ -251,7 +284,7 @@ class InvokeAgentTests(unittest.TestCase):
                 codex_stdout(
                     "C52",
                     'HERMES_RESULT={"status":"AWAIT_USER_MERGE",'
-                    '"summary":"Ready"}',
+                    '"draft":false,"summary":"Ready"}',
                 )
             ]
         )
@@ -276,7 +309,8 @@ class InvokeAgentTests(unittest.TestCase):
         cases = (
             (
                 "testing",
-                'HERMES_RESULT={"status":"RED_COMPLETE","commit":"aaa111",'
+                'HERMES_RESULT={"status":"RED_COMPLETE",'
+                '"test_command":"pytest tests/test_feature.py",'
                 '"next_agent":"review"}',
             ),
             (
@@ -316,7 +350,8 @@ class InvokeAgentTests(unittest.TestCase):
                 codex_stdout(
                     "T52",
                     'notes before\nHERMES_RESULT={"status":"RED_COMPLETE",'
-                    '"commit":"abc123","summary":"3 tests"}\nnotes after',
+                    '"test_command":"pytest tests/test_feature.py",'
+                    '"summary":"3 tests"}\nnotes after',
                 )
             ]
         )
@@ -325,7 +360,11 @@ class InvokeAgentTests(unittest.TestCase):
 
         self.assertEqual(
             result,
-            {"status": "RED_COMPLETE", "commit": "abc123", "summary": "3 tests"},
+            {
+                "status": "RED_COMPLETE",
+                "test_command": "pytest tests/test_feature.py",
+                "summary": "3 tests",
+            },
         )
 
     def test_missing_or_invalid_result_contract_fails_closed(self):

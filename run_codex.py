@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -31,6 +32,13 @@ AGENTS = {
 }
 
 RESULT_MARKER = "HERMES_RESULT="
+GIT_OWNERSHIP_POLICY = """Repository state policy:
+- Hermes owns all git and GitHub mutations.
+- You may inspect repository state with read-only commands such as git status, git diff, git log, git show, git rev-parse, and read-only gh queries.
+- Do not run git add, commit, push, restore, checkout, reset, rebase, merge, clean, or other commands that mutate git state.
+- Do not mutate remote repository state through gh, gh api, or another API.
+- Leave permitted file edits unstaged in the shared working tree for Hermes to validate and commit.
+"""
 
 
 class CodexInvocationError(RuntimeError):
@@ -39,6 +47,14 @@ class CodexInvocationError(RuntimeError):
 
 class InvalidAgentResult(RuntimeError):
     """Raised when an agent does not return the required result contract."""
+
+
+class DirtyWorktreeError(RuntimeError):
+    """Raised when an agent invocation does not start from a clean worktree."""
+
+
+class AgentRepositoryMutationError(RuntimeError):
+    """Raised when a Codex agent mutates git or remote repository state."""
 
 
 def _default_runner(command, cwd, input_text):
@@ -69,6 +85,80 @@ def _load_state(path: Path, workflow_id: str) -> dict:
 def _save_state(path: Path, state: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _git(repo: Path, *args: str, allow_failure: bool = False) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    if completed.returncode != 0 and not allow_failure:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise DirtyWorktreeError(
+            f"unable to verify repository state with git {' '.join(args)}: {detail}"
+        )
+    return completed
+
+
+def _ensure_clean_worktree(repo: Path) -> None:
+    completed = _git(repo, "status", "--porcelain", "--untracked-files=all")
+    if completed.stdout.strip():
+        raise DirtyWorktreeError(
+            "agent invocation requires a clean worktree; Hermes must commit or "
+            "discard the previous agent's changes first"
+        )
+
+
+def _remote_branch_head(repo: Path, branch: str) -> tuple[bool, str | None]:
+    origin = _git(repo, "remote", "get-url", "origin", allow_failure=True)
+    if origin.returncode != 0 or not origin.stdout.strip() or not branch:
+        return False, None
+
+    remote = _git(
+        repo,
+        "ls-remote",
+        "--heads",
+        "origin",
+        f"refs/heads/{branch}",
+    )
+    line = remote.stdout.strip()
+    return True, line.split()[0] if line else None
+
+
+def _capture_repository_guard(repo: Path) -> dict:
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    branch = _git(repo, "branch", "--show-current").stdout.strip()
+    staged = _git(repo, "diff", "--cached", "--name-only").stdout.strip()
+    remote_checked, remote_head = _remote_branch_head(repo, branch)
+    return {
+        "head": head,
+        "branch": branch,
+        "staged": staged,
+        "remote_checked": remote_checked,
+        "remote_head": remote_head,
+    }
+
+
+def _verify_agent_did_not_mutate_repository(repo: Path, before: dict) -> None:
+    after = _capture_repository_guard(repo)
+    if (
+        after["head"] != before["head"]
+        or after["branch"] != before["branch"]
+        or after["staged"]
+    ):
+        raise AgentRepositoryMutationError(
+            "local git state changed during agent invocation; Hermes exclusively owns git mutations"
+        )
+    if before["remote_checked"] and after["remote_head"] != before["remote_head"]:
+        raise AgentRepositoryMutationError(
+            "remote branch changed during agent invocation; Hermes exclusively owns remote mutations"
+        )
 
 
 def _iter_strings(value) -> Iterable[str]:
@@ -123,6 +213,7 @@ def _build_prompt(role_text: str, workflow_id: str, task: str, include_role: boo
         parts.append(role_text.strip())
     parts.extend(
         [
+            GIT_OWNERSHIP_POLICY.strip(),
             f"Workflow: {workflow_id}",
             "Current task:",
             task.strip(),
@@ -161,6 +252,8 @@ def invoke_agent(
     repo = Path(repo).resolve()
     if not repo.is_dir():
         raise ValueError(f"repo is not a directory: {repo}")
+    _ensure_clean_worktree(repo)
+    repository_guard = _capture_repository_guard(repo)
 
     state_file = Path(state_file)
     prompt_dir = Path(prompt_dir)
@@ -183,6 +276,14 @@ def invoke_agent(
         include_role=session_id is None,
     )
     completed = runner(command, repo, prompt)
+    _verify_agent_did_not_mutate_repository(repo, repository_guard)
+    if agent == "review":
+        try:
+            _ensure_clean_worktree(repo)
+        except DirtyWorktreeError as exc:
+            raise AgentRepositoryMutationError(
+                "Review modified the worktree; Review must be read-only"
+            ) from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
         raise CodexInvocationError(
@@ -194,8 +295,16 @@ def invoke_agent(
     if status not in config["statuses"]:
         raise InvalidAgentResult(f"status {status!r} is invalid for agent {agent!r}")
 
+    if "commit" in result:
+        raise InvalidAgentResult(
+            "agents must not include commit; Hermes owns git commit creation"
+        )
+
     if agent in {"testing", "review"} and "next_agent" in result:
         raise InvalidAgentResult(f"agent {agent!r} is not allowed to choose next_agent")
+
+    if agent == "testing" and status == "RED_COMPLETE":
+        _require_nonempty_text(result, "test_command", "Testing RED_COMPLETE")
 
     if agent == "coordinator":
         if status == "HANDOFF":
@@ -205,9 +314,8 @@ def invoke_agent(
                     "Coordinator HANDOFF next_agent must be testing or review"
                 )
             _require_nonempty_text(result, "task", "Coordinator HANDOFF")
+            _require_nonempty_text(result, "reason", "Coordinator HANDOFF")
             if next_agent == "review":
-                for field in ("commit", "test_command"):
-                    _require_nonempty_text(result, field, "Coordinator review HANDOFF")
                 has_full_command = _has_nonempty_text(result, "full_test_command")
                 has_unavailable_reason = _has_nonempty_text(
                     result, "full_test_unavailable_reason"
@@ -230,6 +338,10 @@ def invoke_agent(
                 _require_nonempty_text(
                     result, "reviewed_head", "Coordinator AWAIT_USER_MERGE"
                 )
+                if result.get("draft") is not False:
+                    raise InvalidAgentResult(
+                        "Coordinator AWAIT_USER_MERGE must include draft=false"
+                    )
 
     if config["persistent"] and session_id is None:
         if not thread_id:

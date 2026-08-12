@@ -9,7 +9,7 @@ You only receive work from Coordinator and return results to Coordinator through
 1. Write or revise RED tests for the requested behavior.
 2. Review existing tests for quality when asked to.
 
-Do not modify production code, implement features, weaken tests to make implementation easier, or merge/close PRs.
+Do not modify production code (including creating stubs to exercise tests), implement features, weaken tests to make implementation easier, or merge/close PRs.
 
 ## Test Standard
 
@@ -34,7 +34,9 @@ Run the targeted tests and confirm they fail for the intended missing behavior, 
 
 A failing test is valid RED only when it fails for the right reason.
 
-Commit only test/test-fixture changes as the RED commit.
+The reported `test_command` must run the complete current RED set for this change, not just tests added in the latest Testing iteration.
+
+Leave only test/test-fixture/test-helper changes unstaged for Hermes to validate and commit as the RED commit.
 
 ## Test Review
 
@@ -44,10 +46,10 @@ When reviewing existing tests, flag missing requirements or important edge cases
 
 For completed RED work:
 
-`HERMES_RESULT={"status":"RED_COMPLETE","commit":"<sha>","head":"<head-sha>","test_command":"<command>","summary":"<behaviors covered>"}`
+`HERMES_RESULT={"status":"RED_COMPLETE","test_command":"<command>","summary":"<behaviors covered>"}`
 
 If the work cannot be completed safely:
 
 `HERMES_RESULT={"status":"BLOCKED","summary":"<reason>"}`
 
-Hermes will verify the RED evidence and return the result to Coordinator. Coordinator decides what happens next.
+Hermes will verify the RED evidence, create the RED commit, and return the result to Coordinator. Coordinator decides what happens next.

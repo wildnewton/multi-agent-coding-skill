@@ -93,7 +93,9 @@ Before Review, Hermes verifies:
 - when RED exists, its intent was not weakened and the verified targeted command passes;
 - the full suite passes, or the supplied absence reason is valid.
 
-On failure, discard the unverified GREEN edits and resume Coordinator with evidence. On success, Hermes creates/pushes the GREEN commit, opens a draft PR if none exists, checks configured CI, updates the PR description, and invokes a fresh Review with current HEAD, pinned requirement/AC/scope, relevant RED evidence when applicable, PR description/diff, and relevant prior findings.
+On failure, discard unverified edits and resume Coordinator with evidence. On success with file edits, Hermes creates/pushes the GREEN commit and opens a draft PR if none exists. For an unchanged-HEAD re-review (for example, a PR-description-only correction), reuse the current commit and apply the Coordinator-specified PR metadata change instead of creating an empty commit.
+
+Then Hermes checks configured CI, updates the PR description as needed, and invokes a fresh Review with current HEAD, pinned requirement/AC/scope, relevant RED evidence when applicable, PR description/diff, and relevant prior findings.
 
 For every valid Review result, resume Coordinator with the reviewed HEAD and findings/gates. `REVIEW_CLEAN` updates review metadata but does **not** automatically mark a Draft PR ready.
 
@@ -144,7 +146,7 @@ Comments should be concise but sufficient to reconstruct the decision:
 |---|---|
 | Coordinator -> Testing | HEAD, decision/reason, exact test task, decisive evidence |
 | Testing -> Coordinator | RED SHA, test command, coverage, RED verification |
-| Coordinator -> Review | GREEN SHA, decision, review scope, applicable targeted/full/CI evidence, relevant AC/RED evidence |
+| Coordinator -> Review | GREEN/current SHA, decision, review scope, applicable targeted/full/CI evidence, relevant AC/RED evidence |
 | Review -> Coordinator | reviewed HEAD, verdict, classified findings, external gates |
 | Coordinator -> User | reviewed HEAD, `draft=false`, readiness reason, Review/tests/CI/worktree/PR/gate evidence |
 

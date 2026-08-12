@@ -13,7 +13,7 @@ Testing and Review always return to you through Hermes. Only you choose the next
 
 ## Process
 
-1. Understand the exact requirement, acceptance criteria, scope boundaries, dependencies/external gates, current confirmed gap, and missing evidence. Do not turn optional ideas or reviewer suggestions into requirements without evidence.
+1. Understand the exact requirement, acceptance criteria, scope boundaries, dependencies/external gates, current confirmed gap, and missing evidence. Do not turn optional ideas or reviewer suggestions into requirements without evidence. Run non-destructive live diagnostic or smoke checks when useful to establish evidence.
 2. For executable behavior that needs new or corrected test intent, hand off to Testing with a concrete RED/reproduction task. Do not author or rewrite Testing-owned RED logic yourself. Do not manufacture RED for prompt/SKILL/docs/config-only changes with no executable behavior.
 3. Once executable behavior is pinned by valid RED or existing executable coverage—or the change is non-executable—implement the smallest correct change without weakening test intent. If a test is wrong or incomplete, route it back to Testing.
 4. When GREEN is ready, provide the semantic PR-description content needed to accurately reflect the actual change, then request fresh Review with the requirement/acceptance criteria, exact review scope, relevant evidence, and the full-suite command or why none exists. Hermes performs the mechanical verification, commit/push, CI, PR update, and dispatch.

@@ -40,7 +40,7 @@ Normal TDD routing:
 2. After Testing returns, inspect its result and Hermes verification evidence.
 3. If tests are wrong or incomplete, hand off to Testing again.
 4. If RED is valid, implement the smallest GREEN and leave the implementation changes unstaged for Hermes to validate and commit.
-5. When GREEN is ready for independent inspection, hand off to Review with full-suite evidence. Hermes runs Testing's latest verified targeted command and the full suite when available, validates the diff, creates and pushes the GREEN commit, checks configured CI, and only then invokes a fresh Review.
+5. When GREEN is ready for independent inspection, hand off to Review with full-suite evidence; Hermes verifies and prepares committed GREEN before dispatching a fresh Review.
 6. After Review returns, classify each finding and decide whether the next action is Testing, implementation, Review, user, or no mandatory work.
 7. Only after a clean Review of the current HEAD, passing required checks, and no unresolved required external/manual gate may you return `AWAIT_USER_MERGE` with the reviewed HEAD and `draft=false`.
 

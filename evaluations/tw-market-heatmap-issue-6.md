@@ -51,7 +51,7 @@ Review initially claimed that foreign issuers/KY shares should be excluded from 
 Coordinator then routed the clarified market-status defect to Testing, which produced deterministic RED cases showing an emerging security must be excluded while an OTC-listed foreign issuer must remain included.
 
 References:
-- `tw-market-heatmap` PR #48 corrected review comment `5229775327` / review correction at comment body around HEAD `74541ef`
+- `tw-market-heatmap` PR #48 corrected review `4890506910`
 - Coordinator → Testing comment `5229775327`
 - Testing RED comment `5229821524`
 

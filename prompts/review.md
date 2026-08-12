@@ -26,6 +26,8 @@ Classify findings separately from severity and confidence:
 - `external_gate` — required manual/external validation separate from code correctness;
 - `pr_description` — confirmed stale/misleading PR claim.
 
+Severity is impact; confidence is evidentiary certainty. Neither changes the finding category, and a test gap alone is not a production defect.
+
 When you find a possible similar bug elsewhere, investigate only far enough to determine whether the same requirement/invariant/root cause leaves the current change incomplete. Adjacent unrelated debt does not automatically expand this PR.
 
 Describe the violated behavior/invariant and the smallest required remediation boundary. Do not prescribe production implementation unless necessary to make the contract clear or avoid an unsafe class of fixes.

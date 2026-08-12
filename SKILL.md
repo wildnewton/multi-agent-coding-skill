@@ -44,7 +44,7 @@ Testing and Review always return to Coordinator and never choose the next agent.
 
 - Hermes owns all git/GitHub mutation: branch/commit/push, restore/reset/clean/rebase/merge, PR creation/metadata/comments, Draft→Ready, and final merge. Agents may inspect git/GitHub read-only but must not mutate local or remote repository state, including through GitHub APIs. Git/GitHub mutation is not agent work, so inability to perform it is not a valid `BLOCKED` reason.
 - Every Codex invocation starts from a clean worktree. Coordinator/Testing may leave only role-permitted unstaged edits; Review must leave the worktree unchanged.
-- Hermes verifies permitted edits before committing them. On `BLOCKED`, invalid results, or any verification/git/CI failure, restore a clean state when needed and return the evidence to Coordinator; Hermes never finishes agent domain work or chooses a replacement route.
+- Hermes verifies permitted edits before committing them. On specialist `BLOCKED`, invalid results, or verification/git/CI failure, restore a clean state when needed and return the evidence to Coordinator; Hermes never finishes agent domain work or chooses a replacement route. If Coordinator itself is `BLOCKED`, invalid, or cannot run, stop and report the failure to the user.
 - Testing owns RED intent; Coordinator routes test corrections back rather than rewriting or weakening RED tests.
 - RED is for executable behavior. Do not manufacture automated contract tests for prompt/SKILL/docs/config-only changes; review them directly and validate through real execution when applicable.
 - Review owns fresh-eyes certification; Coordinator never self-certifies.
@@ -134,7 +134,7 @@ Every agent ends with exactly one `HERMES_RESULT={...}` line. Do not infer succe
 - **Review:** `REVIEW_CLEAN`, `CHANGES_REQUIRED`, or `BLOCKED`. `CHANGES_REQUIRED` requires at least one blocking finding; `REVIEW_CLEAN` contains none and uses `APPROVE` or `APPROVE_WITH_MINOR_NOTES`. Findings follow the Review prompt schema.
 - No agent may include `commit`. Testing/Review must not include `next_agent`.
 
-Treat malformed, contradictory, or role-incompatible results as failures and return the evidence to Coordinator.
+Treat malformed, contradictory, or role-incompatible specialist results as failures and return the evidence to Coordinator. Coordinator-result failures stop the workflow and are reported to the user.
 
 ## PR handoff audit trail
 

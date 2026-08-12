@@ -198,7 +198,7 @@ class GitOwnershipContractTests(unittest.TestCase):
                 '"test_command":"pytest tests/test_feature.py","summary":"RED"}',
             )
 
-    def test_review_handoff_reuses_verified_targeted_test_evidence(self):
+    def test_review_handoff_does_not_repeat_targeted_test_command(self):
         result, _ = self.invoke(
             "coordinator",
             'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
@@ -217,8 +217,7 @@ class GitOwnershipContractTests(unittest.TestCase):
                 "coordinator",
                 'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
                 '"task":"Review verified GREEN","reason":"GREEN is ready",'
-                '"commit":"abc123","test_command":"pytest tests/test_feature.py",'
-                '"full_test_command":"pytest"}',
+                '"commit":"abc123","full_test_command":"pytest"}',
             )
 
     def test_await_user_merge_requires_explicit_draft_false(self):

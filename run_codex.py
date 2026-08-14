@@ -42,19 +42,11 @@ GIT_OWNERSHIP_POLICY = """Repository state policy:
 """
 
 
-class AgentRunFailure(RuntimeError):
-    """Base class for failures after an agent invocation has started."""
-
-    def __init__(self, message: str, *, unverified_artifacts: Iterable[str] = ()):
-        super().__init__(message)
-        self.unverified_artifacts = list(unverified_artifacts)
-
-
-class CodexInvocationError(AgentRunFailure):
+class CodexInvocationError(RuntimeError):
     """Raised when Codex cannot be invoked successfully."""
 
 
-class InvalidAgentResult(AgentRunFailure):
+class InvalidAgentResult(RuntimeError):
     """Raised when an agent does not return the required result contract."""
 
 
@@ -305,8 +297,7 @@ def invoke_agent(
     except subprocess.TimeoutExpired as exc:
         _verify_agent_did_not_mutate_repository(repo, repository_guard)
         raise CodexInvocationError(
-            f"Codex timed out after {timeout_seconds} seconds",
-            unverified_artifacts=_worktree_status(repo),
+            f"Codex timed out after {timeout_seconds} seconds"
         ) from exc
 
     _verify_agent_did_not_mutate_repository(repo, repository_guard)
@@ -320,73 +311,65 @@ def invoke_agent(
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
         raise CodexInvocationError(
-            f"Codex exited with status {completed.returncode}: {detail}",
-            unverified_artifacts=_worktree_status(repo),
+            f"Codex exited with status {completed.returncode}: {detail}"
         )
 
-    try:
-        thread_id, result = _parse_output(completed.stdout)
-        status = result["status"]
-        if status not in config["statuses"]:
-            raise InvalidAgentResult(f"status {status!r} is invalid for agent {agent!r}")
+    thread_id, result = _parse_output(completed.stdout)
+    status = result["status"]
+    if status not in config["statuses"]:
+        raise InvalidAgentResult(f"status {status!r} is invalid for agent {agent!r}")
 
-        if "commit" in result:
-            raise InvalidAgentResult(
-                "agents must not include commit; Hermes owns git commit creation"
-            )
+    if "commit" in result:
+        raise InvalidAgentResult(
+            "agents must not include commit; Hermes owns git commit creation"
+        )
 
-        if agent in {"testing", "review"} and "next_agent" in result:
-            raise InvalidAgentResult(f"agent {agent!r} is not allowed to choose next_agent")
+    if agent in {"testing", "review"} and "next_agent" in result:
+        raise InvalidAgentResult(f"agent {agent!r} is not allowed to choose next_agent")
 
-        if agent == "testing" and status == "RED_COMPLETE":
-            _require_nonempty_text(result, "test_command", "Testing RED_COMPLETE")
+    if agent == "testing" and status == "RED_COMPLETE":
+        _require_nonempty_text(result, "test_command", "Testing RED_COMPLETE")
 
-        if agent == "coordinator":
-            if status == "HANDOFF":
-                next_agent = result.get("next_agent")
-                if next_agent not in {"testing", "review"}:
+    if agent == "coordinator":
+        if status == "HANDOFF":
+            next_agent = result.get("next_agent")
+            if next_agent not in {"testing", "review"}:
+                raise InvalidAgentResult(
+                    "Coordinator HANDOFF next_agent must be testing or review"
+                )
+            _require_nonempty_text(result, "task", "Coordinator HANDOFF")
+            _require_nonempty_text(result, "reason", "Coordinator HANDOFF")
+            if next_agent == "review":
+                has_full_command = _has_nonempty_text(result, "full_test_command")
+                has_unavailable_reason = _has_nonempty_text(
+                    result, "full_test_unavailable_reason"
+                )
+                if has_full_command == has_unavailable_reason:
                     raise InvalidAgentResult(
-                        "Coordinator HANDOFF next_agent must be testing or review"
+                        "Coordinator review HANDOFF must include exactly one of "
+                        "full_test_command or full_test_unavailable_reason"
                     )
-                _require_nonempty_text(result, "task", "Coordinator HANDOFF")
-                _require_nonempty_text(result, "reason", "Coordinator HANDOFF")
-                if next_agent == "review":
-                    has_full_command = _has_nonempty_text(result, "full_test_command")
-                    has_unavailable_reason = _has_nonempty_text(
-                        result, "full_test_unavailable_reason"
-                    )
-                    if has_full_command == has_unavailable_reason:
-                        raise InvalidAgentResult(
-                            "Coordinator review HANDOFF must include exactly one of "
-                            "full_test_command or full_test_unavailable_reason"
-                        )
-            else:
-                if "next_agent" in result:
+        else:
+            if "next_agent" in result:
+                raise InvalidAgentResult(
+                    f"Coordinator status {status!r} must not include next_agent"
+                )
+            if status == "AWAIT_USER_DECISION":
+                _require_nonempty_text(
+                    result, "question", "Coordinator AWAIT_USER_DECISION"
+                )
+            elif status == "AWAIT_USER_MERGE":
+                _require_nonempty_text(
+                    result, "reviewed_head", "Coordinator AWAIT_USER_MERGE"
+                )
+                if result.get("draft") is not False:
                     raise InvalidAgentResult(
-                        f"Coordinator status {status!r} must not include next_agent"
+                        "Coordinator AWAIT_USER_MERGE must include draft=false"
                     )
-                if status == "AWAIT_USER_DECISION":
-                    _require_nonempty_text(
-                        result, "question", "Coordinator AWAIT_USER_DECISION"
-                    )
-                elif status == "AWAIT_USER_MERGE":
-                    _require_nonempty_text(
-                        result, "reviewed_head", "Coordinator AWAIT_USER_MERGE"
-                    )
-                    if result.get("draft") is not False:
-                        raise InvalidAgentResult(
-                            "Coordinator AWAIT_USER_MERGE must include draft=false"
-                        )
-    except InvalidAgentResult as exc:
-        exc.unverified_artifacts = _worktree_status(repo)
-        raise
 
     if config["persistent"] and session_id is None:
         if not thread_id:
-            raise CodexInvocationError(
-                "Codex did not emit thread.started for new session",
-                unverified_artifacts=_worktree_status(repo),
-            )
+            raise CodexInvocationError("Codex did not emit thread.started for new session")
         state["sessions"][agent] = thread_id
         _save_state(state_file, state)
 
@@ -431,9 +414,13 @@ def main(argv=None) -> int:
         )
     except Exception as exc:
         error = {"status": "ERROR", "error": str(exc)}
-        unverified_artifacts = getattr(exc, "unverified_artifacts", None)
-        if unverified_artifacts:
-            error["unverified_artifacts"] = unverified_artifacts
+        if isinstance(exc, (CodexInvocationError, InvalidAgentResult)):
+            try:
+                unverified_artifacts = _worktree_status(Path(args.repo).resolve())
+            except Exception:
+                unverified_artifacts = []
+            if unverified_artifacts:
+                error["unverified_artifacts"] = unverified_artifacts
         print(json.dumps(error), file=sys.stderr)
         return 2
 

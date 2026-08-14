@@ -1,52 +1,28 @@
+import io
 import json
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
 from run_codex import (
     DEFAULT_AGENT_TIMEOUT_SECONDS,
-    CodexInvocationError,
-    InvalidAgentResult,
     _default_runner,
-    invoke_agent,
     main,
 )
 
 
-def codex_stdout(thread_id, final_message):
+def codex_stdout(final_message):
     events = [
-        {"type": "thread.started", "thread_id": thread_id},
+        {"type": "thread.started", "thread_id": "T9"},
         {
             "type": "item.completed",
             "item": {"type": "agent_message", "text": final_message},
         },
     ]
     return "\n".join(json.dumps(event) for event in events) + "\n"
-
-
-class FailureRunner:
-    def __init__(self, *, output="", returncode=0, timeout=False, edit=None):
-        self.output = output
-        self.returncode = returncode
-        self.timeout = timeout
-        self.edit = edit
-
-    def __call__(self, command, cwd, input_text):
-        cwd = Path(cwd)
-        if self.edit:
-            target = cwd / self.edit
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("unverified\n", encoding="utf-8")
-        if self.timeout:
-            raise subprocess.TimeoutExpired(command, 10)
-        return subprocess.CompletedProcess(
-            command,
-            self.returncode,
-            stdout=self.output,
-            stderr="failed" if self.returncode else "",
-        )
 
 
 class InvocationFailureTests(unittest.TestCase):
@@ -56,7 +32,6 @@ class InvocationFailureTests(unittest.TestCase):
         self.root = Path(self.tempdir.name)
         self.repo = self.root / "repo"
         self.repo.mkdir()
-        self.state_file = self.root / "state.json"
         self.prompts = self.root / "prompts"
         self.prompts.mkdir()
         for role in ("testing", "coordinator", "review"):
@@ -79,17 +54,24 @@ class InvocationFailureTests(unittest.TestCase):
             capture_output=True,
         )
 
-    def invoke(self, runner, *, timeout_seconds=DEFAULT_AGENT_TIMEOUT_SECONDS):
-        return invoke_agent(
-            agent="testing",
-            workflow_id="issue-9",
-            repo=self.repo,
-            task="test timeout handling",
-            state_file=self.state_file,
-            prompt_dir=self.prompts,
-            runner=runner,
-            timeout_seconds=timeout_seconds,
-        )
+    def argv(self, timeout="1800"):
+        return [
+            "--agent", "testing",
+            "--workflow", "issue-9",
+            "--repo", str(self.repo),
+            "--task", "test failure handling",
+            "--state-file", str(self.root / "state.json"),
+            "--prompt-dir", str(self.prompts),
+            "--timeout-seconds", timeout,
+        ]
+
+    def run_main_with(self, runner, *, timeout="1800"):
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+        with patch("run_codex._default_runner", side_effect=runner):
+            with redirect_stderr(stderr), redirect_stdout(stdout):
+                rc = main(self.argv(timeout))
+        return rc, stdout.getvalue(), stderr.getvalue()
 
     def test_default_timeout_is_1800_seconds(self):
         self.assertEqual(DEFAULT_AGENT_TIMEOUT_SECONDS, 1800)
@@ -97,67 +79,60 @@ class InvocationFailureTests(unittest.TestCase):
     def test_default_runner_passes_timeout_to_subprocess(self):
         completed = subprocess.CompletedProcess(["codex"], 0, stdout="", stderr="")
         with patch("run_codex.subprocess.run", return_value=completed) as run:
-            result = _default_runner(
-                ["codex"], self.repo, "prompt", timeout_seconds=37
-            )
-
-        self.assertIs(result, completed)
+            _default_runner(["codex"], self.repo, "prompt", timeout_seconds=37)
         self.assertEqual(run.call_args.kwargs["timeout"], 37)
 
-    def test_timeout_reports_unverified_worktree_artifacts(self):
-        runner = FailureRunner(timeout=True, edit="tests/new_test.py")
+    def test_timeout_is_failed_and_reports_unverified_artifacts(self):
+        def runner(command, cwd, input_text, *, timeout_seconds):
+            (Path(cwd) / "partial.txt").write_text("partial\n", encoding="utf-8")
+            raise subprocess.TimeoutExpired(command, timeout_seconds)
 
-        with self.assertRaises(CodexInvocationError) as caught:
-            self.invoke(runner, timeout_seconds=10)
+        rc, _, stderr = self.run_main_with(runner, timeout="10")
+        payload = json.loads(stderr)
+        self.assertEqual(rc, 2)
+        self.assertIn("timed out after 10 seconds", payload["error"])
+        self.assertEqual(payload["unverified_artifacts"], ["?? partial.txt"])
 
-        self.assertEqual(
-            caught.exception.unverified_artifacts,
-            ["?? tests/new_test.py"],
-        )
-        self.assertIn("timed out after 10 seconds", str(caught.exception))
+    def test_nonzero_is_failed_and_reports_unverified_artifacts(self):
+        def runner(command, cwd, input_text, *, timeout_seconds):
+            (Path(cwd) / "failed.txt").write_text("partial\n", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="failed")
 
-    def test_nonzero_exit_reports_unverified_worktree_artifacts(self):
-        runner = FailureRunner(returncode=1, edit="failed.txt")
+        rc, _, stderr = self.run_main_with(runner)
+        payload = json.loads(stderr)
+        self.assertEqual(rc, 2)
+        self.assertEqual(payload["unverified_artifacts"], ["?? failed.txt"])
 
-        with self.assertRaises(CodexInvocationError) as caught:
-            self.invoke(runner)
-
-        self.assertEqual(caught.exception.unverified_artifacts, ["?? failed.txt"])
-
-    def test_invalid_result_reports_unverified_worktree_artifacts(self):
-        runner = FailureRunner(
-            output=codex_stdout("T9", "no machine result"),
-            edit="partial.txt",
-        )
-
-        with self.assertRaises(InvalidAgentResult) as caught:
-            self.invoke(runner)
-
-        self.assertEqual(caught.exception.unverified_artifacts, ["?? partial.txt"])
-
-    def test_main_passes_explicit_timeout_to_invoke_agent(self):
-        with patch("run_codex.invoke_agent", return_value={"status": "BLOCKED"}) as invoke:
-            rc = main(
-                [
-                    "--agent",
-                    "testing",
-                    "--workflow",
-                    "issue-9",
-                    "--repo",
-                    str(self.repo),
-                    "--task",
-                    "task",
-                    "--state-file",
-                    str(self.state_file),
-                    "--prompt-dir",
-                    str(self.prompts),
-                    "--timeout-seconds",
-                    "1234",
-                ]
+    def test_invalid_result_is_failed_and_reports_unverified_artifacts(self):
+        def runner(command, cwd, input_text, *, timeout_seconds):
+            (Path(cwd) / "invalid.txt").write_text("partial\n", encoding="utf-8")
+            return subprocess.CompletedProcess(
+                command, 0, stdout=codex_stdout("no result"), stderr=""
             )
 
+        rc, _, stderr = self.run_main_with(runner)
+        payload = json.loads(stderr)
+        self.assertEqual(rc, 2)
+        self.assertEqual(payload["unverified_artifacts"], ["?? invalid.txt"])
+
+    def test_explicit_timeout_reaches_default_runner(self):
+        seen = {}
+
+        def runner(command, cwd, input_text, *, timeout_seconds):
+            seen["timeout_seconds"] = timeout_seconds
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=codex_stdout(
+                    'HERMES_RESULT={"status":"RED_COMPLETE",'
+                    '"test_command":"python -m unittest"}'
+                ),
+                stderr="",
+            )
+
+        rc, _, _ = self.run_main_with(runner, timeout="1234")
         self.assertEqual(rc, 0)
-        self.assertEqual(invoke.call_args.kwargs["timeout_seconds"], 1234)
+        self.assertEqual(seen["timeout_seconds"], 1234)
 
 
 if __name__ == "__main__":

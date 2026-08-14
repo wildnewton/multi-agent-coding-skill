@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""Issue #9 smoke harness for proving Codex execution survives beyond 300 seconds.
-
-Run this script through Hermes with:
-    terminal(background=true, notify_on_complete=true)
-
-The default sleep is intentionally longer than the historical 300-second
-foreground timeout. Use --require-survive-seconds 0 for a fast local sanity run.
-"""
+"""Issue #9 real-execution smoke harness for the historical 300s boundary."""
 
 from __future__ import annotations
 
@@ -22,44 +15,34 @@ from datetime import datetime
 from pathlib import Path
 
 
-def timestamp() -> str:
+def now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def run_git(repo: Path, *args: str) -> None:
+def git(repo: Path, *args: str) -> None:
     subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        check=True,
-        text=True,
-        capture_output=True,
+        ["git", *args], cwd=repo, check=True, text=True, capture_output=True
     )
 
 
 def write_fake_codex(path: Path, sleep_seconds: float) -> None:
-    script = f"""#!/usr/bin/env python3
+    path.write_text(
+        f"""#!/usr/bin/env python3
 import json
 import time
 
 time.sleep({sleep_seconds!r})
-events = [
-    {{"type": "thread.started", "thread_id": "issue-9-smoke-thread"}},
-    {{
-        "type": "item.completed",
-        "item": {{
-            "type": "agent_message",
-            "text": (
-                'HERMES_RESULT={{"status":"RED_COMPLETE",'
-                '"test_command":"python -m unittest",'
-                '"summary":"issue #9 >300s smoke completed"}}'
-            ),
-        }},
-    }},
-]
-for event in events:
-    print(json.dumps(event), flush=True)
-"""
-    path.write_text(script, encoding="utf-8")
+print(json.dumps({{"type":"thread.started","thread_id":"issue-9-smoke"}}))
+print(json.dumps({{
+    "type":"item.completed",
+    "item":{{
+        "type":"agent_message",
+        "text":'HERMES_RESULT={{"status":"RED_COMPLETE","test_command":"python -m unittest"}}'
+    }}
+}}))
+""",
+        encoding="utf-8",
+    )
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
@@ -69,61 +52,47 @@ def main(argv=None) -> int:
     parser.add_argument("--require-survive-seconds", type=float, default=300)
     parser.add_argument("--timeout-seconds", type=int, default=1800)
     args = parser.parse_args(argv)
-
-    if args.sleep_seconds <= args.require_survive_seconds:
-        parser.error("--sleep-seconds must exceed --require-survive-seconds")
-    if args.timeout_seconds <= args.sleep_seconds:
-        parser.error("--timeout-seconds must exceed --sleep-seconds")
+    if not args.require_survive_seconds < args.sleep_seconds < args.timeout_seconds:
+        parser.error(
+            "require-survive-seconds < sleep-seconds < timeout-seconds is required"
+        )
 
     skill_root = Path(__file__).resolve().parents[1]
-    wrapper = skill_root / "run_codex.py"
-    prompt_dir = skill_root / "prompts"
-
     with tempfile.TemporaryDirectory(prefix="issue-9-smoke-") as temp:
         root = Path(temp)
-        repo = root / "target-repo"
+        repo = root / "repo"
         repo.mkdir()
-        run_git(repo, "init")
-        run_git(repo, "config", "user.email", "issue-9-smoke@example.com")
-        run_git(repo, "config", "user.name", "Issue 9 Smoke")
+        git(repo, "init")
+        git(repo, "config", "user.email", "smoke@example.com")
+        git(repo, "config", "user.name", "Issue 9 Smoke")
         (repo / "README.md").write_text("clean\n", encoding="utf-8")
-        run_git(repo, "add", "README.md")
-        run_git(repo, "commit", "-m", "initial")
+        git(repo, "add", "README.md")
+        git(repo, "commit", "-m", "initial")
 
         bin_dir = root / "bin"
         bin_dir.mkdir()
         write_fake_codex(bin_dir / "codex", args.sleep_seconds)
-
         env = os.environ.copy()
         env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
 
         command = [
             sys.executable,
-            str(wrapper),
-            "--agent",
-            "testing",
-            "--workflow",
-            "issue-9-smoke",
-            "--repo",
-            str(repo),
-            "--task",
-            "Prove the invocation survives beyond the historical 300-second boundary.",
-            "--state-file",
-            str(root / "state.json"),
-            "--prompt-dir",
-            str(prompt_dir),
-            "--timeout-seconds",
-            str(args.timeout_seconds),
+            str(skill_root / "run_codex.py"),
+            "--agent", "testing",
+            "--workflow", "issue-9-smoke",
+            "--repo", str(repo),
+            "--task", "Prove this invocation survives the historical 300s boundary.",
+            "--state-file", str(root / "state.json"),
+            "--prompt-dir", str(skill_root / "prompts"),
+            "--timeout-seconds", str(args.timeout_seconds),
         ]
 
-        started_wall = timestamp()
         started = time.monotonic()
         print(
             json.dumps(
                 {
                     "event": "started",
-                    "timestamp": started_wall,
-                    "command": command,
+                    "timestamp": now(),
                     "sleep_seconds": args.sleep_seconds,
                     "require_survive_seconds": args.require_survive_seconds,
                     "timeout_seconds": args.timeout_seconds,
@@ -131,7 +100,6 @@ def main(argv=None) -> int:
             ),
             flush=True,
         )
-
         process = subprocess.Popen(
             command,
             cwd=skill_root,
@@ -142,60 +110,48 @@ def main(argv=None) -> int:
         )
 
         if args.require_survive_seconds:
-            deadline = started + args.require_survive_seconds
-            while time.monotonic() < deadline:
-                if process.poll() is not None:
-                    stdout, stderr = process.communicate()
-                    print(
-                        json.dumps(
-                            {
-                                "event": "failed_before_survival_boundary",
-                                "timestamp": timestamp(),
-                                "elapsed_seconds": round(time.monotonic() - started, 3),
-                                "returncode": process.returncode,
-                                "stdout": stdout,
-                                "stderr": stderr,
-                            }
-                        ),
-                        flush=True,
-                    )
-                    return 1
-                time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
-
-            if process.poll() is not None:
+            try:
+                process.wait(timeout=args.require_survive_seconds)
+            except subprocess.TimeoutExpired:
+                print(
+                    json.dumps(
+                        {
+                            "event": "alive_after_survival_boundary",
+                            "timestamp": now(),
+                            "elapsed_seconds": round(time.monotonic() - started, 3),
+                            "pid": process.pid,
+                        }
+                    ),
+                    flush=True,
+                )
+            else:
                 stdout, stderr = process.communicate()
                 print(
                     json.dumps(
                         {
-                            "event": "failed_at_survival_boundary",
-                            "timestamp": timestamp(),
-                            "elapsed_seconds": round(time.monotonic() - started, 3),
+                            "event": "failed_before_survival_boundary",
+                            "timestamp": now(),
                             "returncode": process.returncode,
-                            "stdout": stdout,
-                            "stderr": stderr,
+                            "stdout": stdout.strip(),
+                            "stderr": stderr.strip(),
                         }
                     ),
                     flush=True,
                 )
                 return 1
 
-            print(
-                json.dumps(
-                    {
-                        "event": "alive_after_survival_boundary",
-                        "timestamp": timestamp(),
-                        "elapsed_seconds": round(time.monotonic() - started, 3),
-                        "pid": process.pid,
-                    }
-                ),
-                flush=True,
-            )
+        try:
+            stdout, stderr = process.communicate(timeout=args.timeout_seconds + 30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            print(json.dumps({"event": "harness_timeout", "timestamp": now()}))
+            return 1
 
-        stdout, stderr = process.communicate()
         elapsed = time.monotonic() - started
         evidence = {
             "event": "completed",
-            "timestamp": timestamp(),
+            "timestamp": now(),
             "elapsed_seconds": round(elapsed, 3),
             "returncode": process.returncode,
             "stdout": stdout.strip(),
@@ -205,17 +161,16 @@ def main(argv=None) -> int:
         }
         print(json.dumps(evidence), flush=True)
 
-        if process.returncode != 0:
-            return 1
-        if elapsed <= args.require_survive_seconds:
-            return 1
-        if elapsed >= args.timeout_seconds:
-            return 1
         try:
             result = json.loads(stdout)
         except json.JSONDecodeError:
             return 1
-        return 0 if result.get("status") == "RED_COMPLETE" else 1
+        return 0 if (
+            process.returncode == 0
+            and evidence["survived_required_boundary"]
+            and evidence["completed_before_agent_timeout"]
+            and result.get("status") == "RED_COMPLETE"
+        ) else 1
 
 
 if __name__ == "__main__":

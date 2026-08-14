@@ -44,7 +44,8 @@ Testing and Review always return to Coordinator and never choose the next agent.
 
 - Hermes owns all git/GitHub mutation: branch/commit/push, restore/reset/clean/rebase/merge, PR creation/metadata/comments, Draft→Ready, and final merge. Agents may inspect git/GitHub read-only but must not mutate local or remote repository state, including through GitHub APIs. Git/GitHub mutation is not agent work, so inability to perform it is not a valid `BLOCKED` reason.
 - Every Codex invocation starts from a clean worktree. Coordinator/Testing may leave only role-permitted unstaged edits; Review must leave the worktree unchanged.
-- Hermes verifies permitted edits before committing them. On specialist `BLOCKED`, invalid results, or verification/git/CI failure, restore a clean state when needed and return the evidence to Coordinator; Hermes never finishes agent domain work or chooses a replacement route. If Coordinator itself is `BLOCKED`, invalid, or cannot run, stop and report the failure to the user.
+- Codex role invocations are bounded background jobs. Hermes dispatches `run_codex.py` with `background=true` and `notify_on_complete=true`; the immediate background start result is dispatch evidence only, never an agent result. Keep the workflow sequential with at most one role invocation in flight, and do not route until that process has completed and its wrapper result has been retrieved.
+- Hermes verifies permitted edits before committing them. On specialist `BLOCKED`, invalid results, or verification/git/CI failure, restore a clean state when needed and return the evidence to Coordinator; Hermes never finishes agent domain work or chooses a replacement route. If `run_codex.py` returns `ERROR`, treat any reported `unverified_artifacts` as failed-invocation leftovers: do not commit or reinterpret them as agent output; restore a clean state before the next invocation. If Coordinator itself is `BLOCKED`, invalid, or cannot run, stop and report the failure to the user.
 - Testing owns RED intent; Coordinator routes test corrections back rather than rewriting or weakening RED tests.
 - RED is for executable behavior. Do not manufacture automated contract tests for prompt/SKILL/docs/config-only changes; review them directly and validate through real execution when applicable.
 - Review owns fresh-eyes certification; Coordinator never self-certifies.
@@ -62,8 +63,11 @@ python3 <skill-dir>/run_codex.py \
   --agent <coordinator|testing|review> \
   --workflow <workflow-id> \
   --repo <target-repo> \
-  --task '<role-specific task + current evidence>'
+  --task '<role-specific task + current evidence>' \
+  --timeout-seconds 1800
 ```
+
+Launch that command with Hermes terminal `background=true` and `notify_on_complete=true`. Record the returned background `session_id`, but do not treat the immediate spawn `exit_code=0` as role completion. Wait for the completion notification, then retrieve the completed process result/output before validating `HERMES_RESULT` or dispatching another role. Do not change Hermes global terminal timeout or `TERMINAL_MAX_FOREGROUND_TIMEOUT` for this workflow.
 
 Start with Coordinator using the user request, acceptance criteria, repository/PR state, and relevant workflow evidence.
 
@@ -132,7 +136,7 @@ Every agent ends with exactly one `HERMES_RESULT={...}` line. Do not infer succe
 - **Review:** `REVIEW_CLEAN`, `CHANGES_REQUIRED`, or `BLOCKED`; verdict and finding semantics follow the Review prompt.
 - No agent may include `commit`. Testing/Review must not include `next_agent`.
 
-Treat malformed, contradictory, or role-incompatible specialist results as failures and return the evidence to Coordinator. Coordinator-result failures stop the workflow and are reported to the user.
+Treat malformed, contradictory, or role-incompatible specialist results as failures and return the evidence to Coordinator. Coordinator-result failures stop the workflow and are reported to the user. A successful background process spawn is not a result contract; only the completed `run_codex.py` process can produce a valid agent result.
 
 ## PR handoff audit trail
 
@@ -158,7 +162,24 @@ For this skill repository:
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 -m compileall -q run_codex.py
+python3 -m compileall -q run_codex.py scripts/smoke_issue_9_background_timeout.py
 ```
+
+For issue #9, a fast local sanity run may shorten the smoke boundary:
+
+```bash
+python3 scripts/smoke_issue_9_background_timeout.py \
+  --sleep-seconds 0.2 \
+  --require-survive-seconds 0 \
+  --timeout-seconds 5
+```
+
+Before issue #9 is closed, run the real smoke command through Hermes terminal with `background=true` and `notify_on_complete=true`:
+
+```bash
+python3 scripts/smoke_issue_9_background_timeout.py
+```
+
+Record the returned Hermes background session id plus the harness `started`, `alive_after_survival_boundary`, and `completed` evidence. The default harness requires the child wrapper to remain alive beyond 300 seconds and complete before its 1800-second deadline. This smoke test is an explicit/manual closure gate, not normal CI.
 
 For an end-to-end smoke test, use a small real issue and confirm: Coordinator can loop through Testing/Review without user nudges; each verified handoff leaves an audit comment; every Codex invocation starts clean; Hermes-created commits are visible HEAD; Review sessions are fresh; code-clean Review can coexist with an unresolved external gate; and merge cannot proceed while a required gate remains open or the PR remains Draft.

@@ -115,6 +115,22 @@ class InvocationFailureTests(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertEqual(payload["unverified_artifacts"], ["?? invalid.txt"])
 
+    def test_malformed_result_is_failed_and_reports_unverified_artifacts(self):
+        def runner(command, cwd, input_text, *, timeout_seconds):
+            (Path(cwd) / "malformed.txt").write_text("partial\n", encoding="utf-8")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=codex_stdout('HERMES_RESULT={"status":'),
+                stderr="",
+            )
+
+        rc, _, stderr = self.run_main_with(runner)
+        payload = json.loads(stderr)
+        self.assertEqual(rc, 2)
+        self.assertIn("not valid JSON", payload["error"])
+        self.assertEqual(payload["unverified_artifacts"], ["?? malformed.txt"])
+
     def test_explicit_timeout_reaches_default_runner(self):
         seen = {}
 

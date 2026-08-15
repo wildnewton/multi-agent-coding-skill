@@ -114,7 +114,22 @@ class InvokeAgentTests(unittest.TestCase):
     def read_state(self):
         return json.loads(self.state_file.read_text(encoding="utf-8"))
 
+    def prime_pending(self, agent):
+        self.state_file.write_text(
+            json.dumps(
+                {
+                    "workflow_id": "issue-51",
+                    "sessions": {},
+                    "pending_agent": agent,
+                    "pending_result_ready": False,
+                    "review_clean_head": None,
+                }
+            ),
+            encoding="utf-8",
+        )
+
     def test_first_testing_invocation_starts_and_saves_session(self):
+        self.prime_pending("testing")
         runner = FakeRunner([codex_stdout("T52", TESTING_RESULT)])
 
         result = self.invoke("testing", runner)
@@ -128,6 +143,7 @@ class InvokeAgentTests(unittest.TestCase):
         self.assertEqual(state["sessions"]["testing"], "T52")
 
     def test_second_testing_invocation_resumes_same_session(self):
+        self.prime_pending("testing")
         first = FakeRunner([codex_stdout("T52", TESTING_RESULT)])
         self.invoke("testing", first)
         second = FakeRunner([codex_stdout("T52", TESTING_RESULT)])
@@ -140,6 +156,7 @@ class InvokeAgentTests(unittest.TestCase):
         )
 
     def test_coordinator_uses_session_separate_from_testing(self):
+        self.prime_pending("testing")
         runner = FakeRunner(
             [
                 codex_stdout("T52", TESTING_RESULT),
@@ -351,11 +368,13 @@ class InvokeAgentTests(unittest.TestCase):
         )
         for agent, output in cases:
             with self.subTest(agent=agent):
+                self.prime_pending(agent)
                 runner = FakeRunner([codex_stdout(f"{agent}-52", output)])
                 with self.assertRaises(InvalidAgentResult):
                     self.invoke(agent, runner)
 
     def test_review_always_starts_fresh_session(self):
+        self.prime_pending("review")
         runner = FakeRunner(
             [
                 codex_stdout("R1", REVIEW_RESULT),
@@ -376,6 +395,7 @@ class InvokeAgentTests(unittest.TestCase):
         self.assertNotIn("review", state["sessions"])
 
     def test_result_contract_is_parsed_from_codex_json_stream(self):
+        self.prime_pending("testing")
         runner = FakeRunner(
             [
                 codex_stdout(
@@ -399,18 +419,32 @@ class InvokeAgentTests(unittest.TestCase):
         )
 
     def test_missing_or_invalid_result_contract_fails_closed(self):
+        self.prime_pending("testing")
         runner = FakeRunner([codex_stdout("T52", "RED is done")])
 
         with self.assertRaises(InvalidAgentResult):
             self.invoke("testing", runner)
 
     def test_role_incompatible_status_fails_closed(self):
+        self.prime_pending("testing")
         runner = FakeRunner(
             [codex_stdout("T52", 'HERMES_RESULT={"status":"GREEN_COMPLETE"}')]
         )
 
         with self.assertRaises(InvalidAgentResult):
             self.invoke("testing", runner)
+
+    def test_specialist_requires_matching_pending_agent(self):
+        cases = (
+            ("testing", TESTING_RESULT),
+            ("review", REVIEW_RESULT),
+        )
+        for agent, output in cases:
+            with self.subTest(agent=agent):
+                runner = FakeRunner([codex_stdout(f"{agent}-52", output)])
+                with self.assertRaises(InvalidAgentResult):
+                    self.invoke(agent, runner)
+                self.assertEqual(runner.calls, [])
 
     def test_testing_timeout_keeps_pending_agent_for_coordinator_recovery(self):
         coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_TESTING_RESULT)])
@@ -539,6 +573,27 @@ class InvokeAgentTests(unittest.TestCase):
         head = self._git("rev-parse", "HEAD").stdout.strip()
         self.assertEqual(state["pending_agent"], "review")
         self.assertEqual(state["review_clean_head"], head)
+
+    def test_new_review_attempt_invalidates_unaccepted_clean_result(self):
+        coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_RESULT)])
+        self.invoke("coordinator", coordinator)
+        review = FakeRunner([codex_stdout("R52", REVIEW_RESULT)])
+        self.invoke("review", review)
+
+        state = self.read_state()
+        self.assertIs(state["pending_result_ready"], True)
+        self.assertIsNotNone(state["review_clean_head"])
+
+        def timeout_runner(command, cwd, input_text):
+            raise subprocess.TimeoutExpired(command, 10)
+
+        with self.assertRaises(CodexInvocationError):
+            self.invoke("review", timeout_runner)
+
+        state = self.read_state()
+        self.assertEqual(state["pending_agent"], "review")
+        self.assertIs(state["pending_result_ready"], False)
+        self.assertIsNone(state["review_clean_head"])
 
     def test_new_review_handoff_invalidates_prior_clean_certification(self):
         head = self._git("rev-parse", "HEAD").stdout.strip()

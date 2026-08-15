@@ -321,14 +321,16 @@ def invoke_agent(
         state["pending_result_ready"] = False
         _save_state(state_file, state)
 
-    if (
-        agent in {"testing", "review"}
-        and pending_agent is not None
-        and pending_agent != agent
-    ):
+    if agent in {"testing", "review"} and pending_agent != agent:
         raise InvalidAgentResult(
-            f"cannot invoke {agent!r}; unresolved pending_agent is {pending_agent!r}"
+            f"cannot invoke {agent!r}; pending_agent is {pending_agent!r}"
         )
+
+    if agent in {"testing", "review"}:
+        state["pending_result_ready"] = False
+        if agent == "review":
+            state["review_clean_head"] = None
+        _save_state(state_file, state)
 
     recovery_coordinator = agent == "coordinator" and pending_agent is not None
     read_only_context = None

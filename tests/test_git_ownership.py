@@ -93,6 +93,20 @@ class GitOwnershipContractTests(unittest.TestCase):
         runner = FakeRunner(codex_stdout(f"{agent}-thread", output))
         return self.invoke_with_runner(agent, runner), runner
 
+    def prime_pending(self, agent):
+        self.state_file.write_text(
+            json.dumps(
+                {
+                    "workflow_id": "issue-137",
+                    "sessions": {},
+                    "pending_agent": agent,
+                    "pending_result_ready": False,
+                    "review_clean_head": None,
+                }
+            ),
+            encoding="utf-8",
+        )
+
     def test_dirty_worktree_is_rejected_before_codex(self):
         (self.repo / "README.md").write_text("dirty\n", encoding="utf-8")
         runner = FakeRunner(
@@ -109,6 +123,8 @@ class GitOwnershipContractTests(unittest.TestCase):
         self.assertEqual(runner.calls, [])
 
     def test_agent_cannot_change_local_head(self):
+        self.prime_pending("testing")
+
         def mutate(repo):
             subprocess.run(
                 ["git", "commit", "--allow-empty", "-m", "agent commit"],
@@ -169,6 +185,8 @@ class GitOwnershipContractTests(unittest.TestCase):
             self.invoke_with_runner("coordinator", runner)
 
     def test_review_cannot_modify_worktree_files(self):
+        self.prime_pending("review")
+
         def mutate(repo):
             (repo / "README.md").write_text("review changed this\n", encoding="utf-8")
 
@@ -184,6 +202,7 @@ class GitOwnershipContractTests(unittest.TestCase):
             self.invoke_with_runner("review", runner)
 
     def test_red_complete_requires_test_command(self):
+        self.prime_pending("testing")
         with self.assertRaises(InvalidAgentResult):
             self.invoke(
                 "testing",
@@ -191,6 +210,7 @@ class GitOwnershipContractTests(unittest.TestCase):
             )
 
     def test_testing_result_rejects_agent_owned_commit(self):
+        self.prime_pending("testing")
         with self.assertRaises(InvalidAgentResult):
             self.invoke(
                 "testing",
@@ -232,11 +252,23 @@ class GitOwnershipContractTests(unittest.TestCase):
                 with self.assertRaises(InvalidAgentResult):
                     self.invoke("coordinator", output)
 
-    def test_await_user_merge_accepts_explicit_draft_false(self):
+    def test_await_user_merge_accepts_explicit_draft_false_after_clean_review(self):
+        head = self._git("rev-parse", "HEAD").stdout.strip()
+        self.state_file.write_text(
+            json.dumps(
+                {
+                    "workflow_id": "issue-137",
+                    "sessions": {},
+                    "pending_agent": None,
+                    "review_clean_head": head,
+                }
+            ),
+            encoding="utf-8",
+        )
         result, _ = self.invoke(
             "coordinator",
             'HERMES_RESULT={"status":"AWAIT_USER_MERGE",'
-            '"reviewed_head":"abc123","draft":false}',
+            f'"reviewed_head":"{head}","draft":false}}',
         )
 
         self.assertEqual(result["status"], "AWAIT_USER_MERGE")

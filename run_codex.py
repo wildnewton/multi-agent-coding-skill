@@ -72,7 +72,13 @@ def _default_runner(command, cwd, input_text, *, timeout_seconds):
 
 def _load_state(path: Path, workflow_id: str) -> dict:
     if not path.exists():
-        return {"workflow_id": workflow_id, "sessions": {}}
+        return {
+            "workflow_id": workflow_id,
+            "sessions": {},
+            "pending_agent": None,
+            "pending_result_ready": False,
+            "review_clean_head": None,
+        }
     state = json.loads(path.read_text(encoding="utf-8"))
     if state.get("workflow_id") not in (None, workflow_id):
         raise ValueError(
@@ -81,6 +87,9 @@ def _load_state(path: Path, workflow_id: str) -> dict:
         )
     state.setdefault("workflow_id", workflow_id)
     state.setdefault("sessions", {})
+    state.setdefault("pending_agent", None)
+    state.setdefault("pending_result_ready", False)
+    state.setdefault("review_clean_head", None)
     return state
 
 
@@ -119,6 +128,15 @@ def _ensure_clean_worktree(repo: Path) -> None:
             "agent invocation requires a clean worktree; Hermes must commit or "
             "discard the previous agent's changes first"
         )
+
+
+def _ensure_read_only_worktree(repo: Path, context: str) -> None:
+    try:
+        _ensure_clean_worktree(repo)
+    except DirtyWorktreeError as exc:
+        raise AgentRepositoryMutationError(
+            f"{context} modified the worktree; this invocation must be read-only"
+        ) from exc
 
 
 def _remote_branch_head(repo: Path, branch: str) -> tuple[bool, str | None]:
@@ -252,11 +270,18 @@ def invoke_agent(
     prompt_dir: str | Path,
     runner: Callable | None = None,
     timeout_seconds: int = DEFAULT_AGENT_TIMEOUT_SECONDS,
+    completed_agent: str | None = None,
 ) -> dict:
     if agent not in AGENTS:
         raise ValueError(f"unknown agent {agent!r}; expected one of {', '.join(AGENTS)}")
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
+    if completed_agent not in {None, "testing", "review"}:
+        raise ValueError("completed_agent must be testing, review, or None")
+    if completed_agent is not None and agent != "coordinator":
+        raise InvalidAgentResult(
+            "completed_agent may only be supplied when resuming Coordinator"
+        )
 
     repo = Path(repo).resolve()
     if not repo.is_dir():
@@ -270,7 +295,51 @@ def invoke_agent(
     role_path = prompt_dir / config["prompt"]
     role_text = role_path.read_text(encoding="utf-8")
     state = _load_state(state_file, workflow_id)
-    _save_state(state_file, state)
+
+    if completed_agent is not None:
+        if state.get("pending_agent") != completed_agent:
+            raise InvalidAgentResult(
+                f"cannot complete {completed_agent!r}; pending_agent is "
+                f"{state.get('pending_agent')!r}"
+            )
+        if not state.get("pending_result_ready"):
+            raise InvalidAgentResult(
+                f"cannot complete {completed_agent!r}; the pending specialist "
+                "has not produced a completed role-valid result"
+            )
+        state["pending_agent"] = None
+        state["pending_result_ready"] = False
+        _save_state(state_file, state)
+
+    pending_agent = state.get("pending_agent")
+    if (
+        agent == "coordinator"
+        and pending_agent is not None
+        and completed_agent is None
+        and state.get("pending_result_ready")
+    ):
+        state["pending_result_ready"] = False
+        if pending_agent == "review":
+            state["review_clean_head"] = None
+        _save_state(state_file, state)
+
+    if agent in {"testing", "review"} and pending_agent != agent:
+        raise InvalidAgentResult(
+            f"cannot invoke {agent!r}; pending_agent is {pending_agent!r}"
+        )
+
+    if agent in {"testing", "review"}:
+        state["pending_result_ready"] = False
+        if agent == "review":
+            state["review_clean_head"] = None
+        _save_state(state_file, state)
+
+    recovery_coordinator = agent == "coordinator" and pending_agent is not None
+    read_only_context = None
+    if agent == "review":
+        read_only_context = "Review"
+    elif recovery_coordinator:
+        read_only_context = "Coordinator recovery"
 
     session_id = state["sessions"].get(agent) if config["persistent"] else None
     if session_id:
@@ -296,18 +365,15 @@ def invoke_agent(
             completed = runner(command, repo, prompt)
     except subprocess.TimeoutExpired as exc:
         _verify_agent_did_not_mutate_repository(repo, repository_guard)
+        if read_only_context is not None:
+            _ensure_read_only_worktree(repo, read_only_context)
         raise CodexInvocationError(
             f"Codex timed out after {timeout_seconds} seconds"
         ) from exc
 
     _verify_agent_did_not_mutate_repository(repo, repository_guard)
-    if agent == "review":
-        try:
-            _ensure_clean_worktree(repo)
-        except DirtyWorktreeError as exc:
-            raise AgentRepositoryMutationError(
-                "Review modified the worktree; Review must be read-only"
-            ) from exc
+    if read_only_context is not None:
+        _ensure_read_only_worktree(repo, read_only_context)
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
         raise CodexInvocationError(
@@ -349,6 +415,10 @@ def invoke_agent(
                         "Coordinator review HANDOFF must include exactly one of "
                         "full_test_command or full_test_unavailable_reason"
                     )
+            state["pending_agent"] = next_agent
+            state["pending_result_ready"] = False
+            if next_agent == "review":
+                state["review_clean_head"] = None
         else:
             if "next_agent" in result:
                 raise InvalidAgentResult(
@@ -366,13 +436,37 @@ def invoke_agent(
                     raise InvalidAgentResult(
                         "Coordinator AWAIT_USER_MERGE must include draft=false"
                     )
+                if state.get("pending_agent") is not None:
+                    raise InvalidAgentResult(
+                        "Coordinator AWAIT_USER_MERGE requires no unresolved pending_agent"
+                    )
+                reviewed_head = result["reviewed_head"].strip()
+                review_clean_head = state.get("review_clean_head")
+                current_head = repository_guard["head"]
+                if (
+                    not review_clean_head
+                    or reviewed_head != review_clean_head
+                    or reviewed_head != current_head
+                ):
+                    raise InvalidAgentResult(
+                        "Coordinator AWAIT_USER_MERGE requires reviewed_head to match "
+                        "the current HEAD certified by REVIEW_CLEAN"
+                    )
+
+    if agent == "testing" and status == "RED_COMPLETE":
+        state["pending_result_ready"] = True
+
+    if agent == "review" and status in {"REVIEW_CLEAN", "CHANGES_REQUIRED"}:
+        state["pending_result_ready"] = True
+        if status == "REVIEW_CLEAN":
+            state["review_clean_head"] = repository_guard["head"]
 
     if config["persistent"] and session_id is None:
         if not thread_id:
             raise CodexInvocationError("Codex did not emit thread.started for new session")
         state["sessions"][agent] = thread_id
-        _save_state(state_file, state)
 
+    _save_state(state_file, state)
     return result
 
 
@@ -394,6 +488,14 @@ def main(argv=None) -> int:
         default=DEFAULT_AGENT_TIMEOUT_SECONDS,
         help=f"Codex subprocess timeout in seconds (default: {DEFAULT_AGENT_TIMEOUT_SECONDS})",
     )
+    parser.add_argument(
+        "--completed-agent",
+        choices=("testing", "review"),
+        help=(
+            "Hermes completion handshake: clear the matching pending specialist "
+            "only after its existing mechanical acceptance has passed"
+        ),
+    )
     args = parser.parse_args(argv)
 
     root = Path(__file__).resolve().parent
@@ -411,10 +513,14 @@ def main(argv=None) -> int:
             state_file=state_file,
             prompt_dir=prompt_dir,
             timeout_seconds=args.timeout_seconds,
+            completed_agent=args.completed_agent,
         )
     except Exception as exc:
         error = {"status": "ERROR", "error": str(exc)}
-        if isinstance(exc, (CodexInvocationError, InvalidAgentResult)):
+        if isinstance(
+            exc,
+            (CodexInvocationError, InvalidAgentResult, AgentRepositoryMutationError),
+        ):
             try:
                 unverified_artifacts = _worktree_status(Path(args.repo).resolve())
             except Exception:

@@ -4,7 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run_codex import InvalidAgentResult, invoke_agent
+from run_codex import (
+    AgentRepositoryMutationError,
+    CodexInvocationError,
+    InvalidAgentResult,
+    invoke_agent,
+)
 
 
 TESTING_RESULT = (
@@ -20,10 +25,6 @@ COORDINATOR_RESULT = (
 COORDINATOR_TESTING_RESULT = (
     'HERMES_RESULT={"status":"HANDOFF","next_agent":"testing",'
     '"task":"Add RED coverage for AC3","reason":"AC3 lacks RED coverage"}'
-)
-COORDINATOR_USER_RESULT = (
-    'HERMES_RESULT={"status":"AWAIT_USER_MERGE","summary":"Ready to merge",'
-    '"reviewed_head":"bbb222","draft":false}'
 )
 COORDINATOR_DECISION_RESULT = (
     'HERMES_RESULT={"status":"AWAIT_USER_DECISION",'
@@ -91,7 +92,14 @@ class InvokeAgentTests(unittest.TestCase):
             capture_output=True,
         )
 
-    def invoke(self, agent, runner, task="do the task"):
+    def invoke(
+        self,
+        agent,
+        runner,
+        task="do the task",
+        *,
+        completed_agent=None,
+    ):
         return invoke_agent(
             agent=agent,
             workflow_id="issue-51",
@@ -100,9 +108,28 @@ class InvokeAgentTests(unittest.TestCase):
             state_file=self.state_file,
             prompt_dir=self.prompts,
             runner=runner,
+            completed_agent=completed_agent,
+        )
+
+    def read_state(self):
+        return json.loads(self.state_file.read_text(encoding="utf-8"))
+
+    def prime_pending(self, agent):
+        self.state_file.write_text(
+            json.dumps(
+                {
+                    "workflow_id": "issue-51",
+                    "sessions": {},
+                    "pending_agent": agent,
+                    "pending_result_ready": False,
+                    "review_clean_head": None,
+                }
+            ),
+            encoding="utf-8",
         )
 
     def test_first_testing_invocation_starts_and_saves_session(self):
+        self.prime_pending("testing")
         runner = FakeRunner([codex_stdout("T52", TESTING_RESULT)])
 
         result = self.invoke("testing", runner)
@@ -112,10 +139,11 @@ class InvokeAgentTests(unittest.TestCase):
             runner.calls[0]["command"], ["codex", "exec", "--json", "-"]
         )
         self.assertIn("ROLE:testing", runner.calls[0]["input_text"])
-        state = json.loads(self.state_file.read_text(encoding="utf-8"))
+        state = self.read_state()
         self.assertEqual(state["sessions"]["testing"], "T52")
 
     def test_second_testing_invocation_resumes_same_session(self):
+        self.prime_pending("testing")
         first = FakeRunner([codex_stdout("T52", TESTING_RESULT)])
         self.invoke("testing", first)
         second = FakeRunner([codex_stdout("T52", TESTING_RESULT)])
@@ -128,6 +156,7 @@ class InvokeAgentTests(unittest.TestCase):
         )
 
     def test_coordinator_uses_session_separate_from_testing(self):
+        self.prime_pending("testing")
         runner = FakeRunner(
             [
                 codex_stdout("T52", TESTING_RESULT),
@@ -138,7 +167,7 @@ class InvokeAgentTests(unittest.TestCase):
         self.invoke("testing", runner)
         self.invoke("coordinator", runner)
 
-        state = json.loads(self.state_file.read_text(encoding="utf-8"))
+        state = self.read_state()
         self.assertEqual(state["sessions"]["testing"], "T52")
         self.assertEqual(state["sessions"]["coordinator"], "C52")
         self.assertNotEqual(
@@ -164,6 +193,7 @@ class InvokeAgentTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "HANDOFF")
         self.assertEqual(result["next_agent"], "testing")
+        self.assertEqual(self.read_state()["pending_agent"], "testing")
 
     def test_coordinator_can_handoff_to_review(self):
         runner = FakeRunner([codex_stdout("C52", COORDINATOR_RESULT)])
@@ -172,15 +202,33 @@ class InvokeAgentTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "HANDOFF")
         self.assertEqual(result["next_agent"], "review")
+        state = self.read_state()
+        self.assertEqual(state["pending_agent"], "review")
+        self.assertIsNone(state["review_clean_head"])
 
-    def test_coordinator_can_await_user_merge(self):
-        runner = FakeRunner([codex_stdout("C52", COORDINATOR_USER_RESULT)])
+    def test_coordinator_can_await_user_merge_after_verified_clean_review(self):
+        first = FakeRunner([codex_stdout("C52", COORDINATOR_RESULT)])
+        self.invoke("coordinator", first)
+        review = FakeRunner([codex_stdout("R52", REVIEW_RESULT)])
+        self.invoke("review", review)
 
-        result = self.invoke("coordinator", runner)
+        head = self._git("rev-parse", "HEAD").stdout.strip()
+        merge_result = (
+            'HERMES_RESULT={"status":"AWAIT_USER_MERGE","summary":"Ready to merge",'
+            f'"reviewed_head":"{head}","draft":false}}'
+        )
+        coordinator = FakeRunner([codex_stdout("C52", merge_result)])
+
+        result = self.invoke(
+            "coordinator",
+            coordinator,
+            completed_agent="review",
+        )
 
         self.assertEqual(result["status"], "AWAIT_USER_MERGE")
-        self.assertEqual(result["reviewed_head"], "bbb222")
+        self.assertEqual(result["reviewed_head"], head)
         self.assertIs(result["draft"], False)
+        self.assertIsNone(self.read_state()["pending_agent"])
 
     def test_coordinator_can_await_user_decision(self):
         runner = FakeRunner([codex_stdout("C52", COORDINATOR_DECISION_RESULT)])
@@ -320,11 +368,13 @@ class InvokeAgentTests(unittest.TestCase):
         )
         for agent, output in cases:
             with self.subTest(agent=agent):
+                self.prime_pending(agent)
                 runner = FakeRunner([codex_stdout(f"{agent}-52", output)])
                 with self.assertRaises(InvalidAgentResult):
                     self.invoke(agent, runner)
 
     def test_review_always_starts_fresh_session(self):
+        self.prime_pending("review")
         runner = FakeRunner(
             [
                 codex_stdout("R1", REVIEW_RESULT),
@@ -341,10 +391,11 @@ class InvokeAgentTests(unittest.TestCase):
         self.assertEqual(
             runner.calls[1]["command"], ["codex", "exec", "--json", "-"]
         )
-        state = json.loads(self.state_file.read_text(encoding="utf-8"))
+        state = self.read_state()
         self.assertNotIn("review", state["sessions"])
 
     def test_result_contract_is_parsed_from_codex_json_stream(self):
+        self.prime_pending("testing")
         runner = FakeRunner(
             [
                 codex_stdout(
@@ -368,18 +419,262 @@ class InvokeAgentTests(unittest.TestCase):
         )
 
     def test_missing_or_invalid_result_contract_fails_closed(self):
+        self.prime_pending("testing")
         runner = FakeRunner([codex_stdout("T52", "RED is done")])
 
         with self.assertRaises(InvalidAgentResult):
             self.invoke("testing", runner)
 
     def test_role_incompatible_status_fails_closed(self):
+        self.prime_pending("testing")
         runner = FakeRunner(
             [codex_stdout("T52", 'HERMES_RESULT={"status":"GREEN_COMPLETE"}')]
         )
 
         with self.assertRaises(InvalidAgentResult):
             self.invoke("testing", runner)
+
+    def test_specialist_requires_matching_pending_agent(self):
+        cases = (
+            ("testing", TESTING_RESULT),
+            ("review", REVIEW_RESULT),
+        )
+        for agent, output in cases:
+            with self.subTest(agent=agent):
+                runner = FakeRunner([codex_stdout(f"{agent}-52", output)])
+                with self.assertRaises(InvalidAgentResult):
+                    self.invoke(agent, runner)
+                self.assertEqual(runner.calls, [])
+
+    def test_testing_timeout_keeps_pending_agent_for_coordinator_recovery(self):
+        coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_TESTING_RESULT)])
+        self.invoke("coordinator", coordinator)
+
+        def timeout_runner(command, cwd, input_text):
+            raise subprocess.TimeoutExpired(command, 10)
+
+        with self.assertRaises(CodexInvocationError):
+            self.invoke("testing", timeout_runner)
+
+        self.assertEqual(self.read_state()["pending_agent"], "testing")
+
+        narrower = (
+            'HERMES_RESULT={"status":"HANDOFF","next_agent":"testing",'
+            '"task":"Add RED only for the timeout recovery path",'
+            '"reason":"Previous Testing task timed out and is being narrowed"}'
+        )
+        recovery = FakeRunner([codex_stdout("C52", narrower)])
+        result = self.invoke("coordinator", recovery)
+
+        self.assertEqual(result["status"], "HANDOFF")
+        self.assertEqual(self.read_state()["pending_agent"], "testing")
+
+    def test_recovery_coordinator_cannot_modify_worktree(self):
+        coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_TESTING_RESULT)])
+        self.invoke("coordinator", coordinator)
+
+        def editing_runner(command, cwd, input_text):
+            (Path(cwd) / "tests_added_by_coordinator.py").write_text(
+                "assert True\n", encoding="utf-8"
+            )
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=codex_stdout("C52", COORDINATOR_TESTING_RESULT),
+                stderr="",
+            )
+
+        with self.assertRaises(AgentRepositoryMutationError):
+            self.invoke("coordinator", editing_runner)
+
+        self.assertEqual(self.read_state()["pending_agent"], "testing")
+
+    def test_timeout_cannot_be_cleared_by_completion_handshake(self):
+        coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_TESTING_RESULT)])
+        self.invoke("coordinator", coordinator)
+
+        def timeout_runner(command, cwd, input_text):
+            raise subprocess.TimeoutExpired(command, 10)
+
+        with self.assertRaises(CodexInvocationError):
+            self.invoke("testing", timeout_runner)
+
+        decision = FakeRunner([codex_stdout("C52", COORDINATOR_DECISION_RESULT)])
+        with self.assertRaises(InvalidAgentResult):
+            self.invoke("coordinator", decision, completed_agent="testing")
+
+        state = self.read_state()
+        self.assertEqual(state["pending_agent"], "testing")
+        self.assertIs(state["pending_result_ready"], False)
+
+    def test_recovery_without_completion_invalidates_ready_result(self):
+        coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_TESTING_RESULT)])
+        self.invoke("coordinator", coordinator)
+        testing = FakeRunner([codex_stdout("T52", TESTING_RESULT)])
+        self.invoke("testing", testing)
+        self.assertIs(self.read_state()["pending_result_ready"], True)
+
+        recovery = FakeRunner([codex_stdout("C52", COORDINATOR_DECISION_RESULT)])
+        self.invoke("coordinator", recovery)
+
+        state = self.read_state()
+        self.assertEqual(state["pending_agent"], "testing")
+        self.assertIs(state["pending_result_ready"], False)
+
+        stale_completion = FakeRunner(
+            [codex_stdout("C52", COORDINATOR_DECISION_RESULT)]
+        )
+        with self.assertRaises(InvalidAgentResult):
+            self.invoke(
+                "coordinator",
+                stale_completion,
+                completed_agent="testing",
+            )
+
+    def test_recovery_without_completion_invalidates_review_clean_head(self):
+        coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_RESULT)])
+        self.invoke("coordinator", coordinator)
+        review = FakeRunner([codex_stdout("R52", REVIEW_RESULT)])
+        self.invoke("review", review)
+
+        state = self.read_state()
+        self.assertIs(state["pending_result_ready"], True)
+        self.assertIsNotNone(state["review_clean_head"])
+
+        recovery = FakeRunner([codex_stdout("C52", COORDINATOR_DECISION_RESULT)])
+        self.invoke("coordinator", recovery)
+
+        state = self.read_state()
+        self.assertEqual(state["pending_agent"], "review")
+        self.assertIs(state["pending_result_ready"], False)
+        self.assertIsNone(state["review_clean_head"])
+
+    def test_completed_agent_handshake_must_match_pending_agent(self):
+        coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_TESTING_RESULT)])
+        self.invoke("coordinator", coordinator)
+
+        runner = FakeRunner([codex_stdout("C52", COORDINATOR_DECISION_RESULT)])
+        with self.assertRaises(InvalidAgentResult):
+            self.invoke("coordinator", runner, completed_agent="review")
+
+        self.assertEqual(self.read_state()["pending_agent"], "testing")
+
+    def test_completed_agent_handshake_clears_pending_before_normal_coordinator(self):
+        coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_TESTING_RESULT)])
+        self.invoke("coordinator", coordinator)
+        testing = FakeRunner([codex_stdout("T52", TESTING_RESULT)])
+        self.invoke("testing", testing)
+
+        decision = FakeRunner([codex_stdout("C52", COORDINATOR_DECISION_RESULT)])
+        self.invoke("coordinator", decision, completed_agent="testing")
+
+        self.assertIsNone(self.read_state()["pending_agent"])
+
+    def test_unresolved_pending_agent_blocks_other_specialist(self):
+        coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_TESTING_RESULT)])
+        self.invoke("coordinator", coordinator)
+
+        review = FakeRunner([codex_stdout("R52", REVIEW_RESULT)])
+        with self.assertRaises(InvalidAgentResult):
+            self.invoke("review", review)
+
+        self.assertEqual(self.read_state()["pending_agent"], "testing")
+
+    def test_review_clean_records_actual_head_but_does_not_clear_pending(self):
+        coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_RESULT)])
+        self.invoke("coordinator", coordinator)
+
+        review = FakeRunner([codex_stdout("R52", REVIEW_RESULT)])
+        self.invoke("review", review)
+
+        state = self.read_state()
+        head = self._git("rev-parse", "HEAD").stdout.strip()
+        self.assertEqual(state["pending_agent"], "review")
+        self.assertEqual(state["review_clean_head"], head)
+
+    def test_new_review_attempt_invalidates_unaccepted_clean_result(self):
+        coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_RESULT)])
+        self.invoke("coordinator", coordinator)
+        review = FakeRunner([codex_stdout("R52", REVIEW_RESULT)])
+        self.invoke("review", review)
+
+        state = self.read_state()
+        self.assertIs(state["pending_result_ready"], True)
+        self.assertIsNotNone(state["review_clean_head"])
+
+        def timeout_runner(command, cwd, input_text):
+            raise subprocess.TimeoutExpired(command, 10)
+
+        with self.assertRaises(CodexInvocationError):
+            self.invoke("review", timeout_runner)
+
+        state = self.read_state()
+        self.assertEqual(state["pending_agent"], "review")
+        self.assertIs(state["pending_result_ready"], False)
+        self.assertIsNone(state["review_clean_head"])
+
+    def test_new_review_handoff_invalidates_prior_clean_certification(self):
+        head = self._git("rev-parse", "HEAD").stdout.strip()
+        self.state_file.write_text(
+            json.dumps(
+                {
+                    "workflow_id": "issue-51",
+                    "sessions": {},
+                    "pending_agent": None,
+                    "review_clean_head": head,
+                }
+            ),
+            encoding="utf-8",
+        )
+        runner = FakeRunner([codex_stdout("C52", COORDINATOR_RESULT)])
+
+        self.invoke("coordinator", runner)
+
+        state = self.read_state()
+        self.assertEqual(state["pending_agent"], "review")
+        self.assertIsNone(state["review_clean_head"])
+
+    def test_pending_review_blocks_merge_readiness(self):
+        coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_RESULT)])
+        self.invoke("coordinator", coordinator)
+        head = self._git("rev-parse", "HEAD").stdout.strip()
+        merge_result = (
+            'HERMES_RESULT={"status":"AWAIT_USER_MERGE",'
+            f'"reviewed_head":"{head}","draft":false}}'
+        )
+        recovery = FakeRunner([codex_stdout("C52", merge_result)])
+
+        with self.assertRaises(InvalidAgentResult):
+            self.invoke("coordinator", recovery)
+
+    def test_stale_review_clean_head_blocks_merge_readiness(self):
+        old_head = self._git("rev-parse", "HEAD").stdout.strip()
+        self.state_file.write_text(
+            json.dumps(
+                {
+                    "workflow_id": "issue-51",
+                    "sessions": {},
+                    "pending_agent": None,
+                    "review_clean_head": old_head,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.repo / "new.txt").write_text("new\n", encoding="utf-8")
+        self._git("add", "new.txt")
+        self._git("commit", "-m", "new head")
+        runner = FakeRunner(
+            [
+                codex_stdout(
+                    "C52",
+                    'HERMES_RESULT={"status":"AWAIT_USER_MERGE",'
+                    f'"reviewed_head":"{old_head}","draft":false}}',
+                )
+            ]
+        )
+
+        with self.assertRaises(InvalidAgentResult):
+            self.invoke("coordinator", runner)
 
 
 if __name__ == "__main__":

@@ -38,6 +38,19 @@ class InvocationFailureTests(unittest.TestCase):
             (self.prompts / f"{role}.md").write_text(
                 f"ROLE:{role}\n", encoding="utf-8"
             )
+        self.state_file = self.root / "state.json"
+        self.state_file.write_text(
+            json.dumps(
+                {
+                    "workflow_id": "issue-9",
+                    "sessions": {},
+                    "pending_agent": "testing",
+                    "pending_result_ready": False,
+                    "review_clean_head": None,
+                }
+            ),
+            encoding="utf-8",
+        )
         self._git("init")
         self._git("config", "user.email", "tests@example.com")
         self._git("config", "user.name", "Test User")
@@ -60,7 +73,7 @@ class InvocationFailureTests(unittest.TestCase):
             "--workflow", "issue-9",
             "--repo", str(self.repo),
             "--task", "test failure handling",
-            "--state-file", str(self.root / "state.json"),
+            "--state-file", str(self.state_file),
             "--prompt-dir", str(self.prompts),
             "--timeout-seconds", timeout,
         ]

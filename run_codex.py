@@ -117,6 +117,24 @@ def _git(repo: Path, *args: str, allow_failure: bool = False) -> subprocess.Comp
     return completed
 
 
+def _current_pr_head(repo: Path) -> str:
+    env = os.environ.copy()
+    env["GH_PROMPT_DISABLED"] = "1"
+    completed = subprocess.run(
+        ["gh", "pr", "view", "--json", "headRefOid", "--jq", ".headRefOid"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    head = completed.stdout.strip()
+    if completed.returncode != 0 or not head:
+        detail = (completed.stderr or completed.stdout or "no PR HEAD returned").strip()
+        raise RuntimeError(f"unable to verify actual GitHub PR HEAD: {detail}")
+    return head
+
+
 def _worktree_status(repo: Path) -> list[str]:
     completed = _git(repo, "status", "--porcelain", "--untracked-files=all")
     return [line for line in completed.stdout.splitlines() if line.strip()]
@@ -499,6 +517,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     root = Path(__file__).resolve().parent
+    repo = Path(args.repo).resolve()
     state_file = Path(args.state_file) if args.state_file else (
         root / "state" / f"{_safe_workflow_name(args.workflow)}.json"
     )
@@ -508,13 +527,26 @@ def main(argv=None) -> int:
         result = invoke_agent(
             agent=args.agent,
             workflow_id=args.workflow,
-            repo=args.repo,
+            repo=repo,
             task=args.task,
             state_file=state_file,
             prompt_dir=prompt_dir,
             timeout_seconds=args.timeout_seconds,
             completed_agent=args.completed_agent,
         )
+        if result.get("status") == "AWAIT_USER_MERGE":
+            reviewed_head = result["reviewed_head"].strip()
+            current_pr_head = _current_pr_head(repo)
+            if current_pr_head != reviewed_head:
+                error = {
+                    "status": "ERROR",
+                    "error_code": "MERGE_PR_HEAD_MISMATCH",
+                    "error": "actual GitHub PR HEAD does not match reviewed_head",
+                    "reviewed_head": reviewed_head,
+                    "current_pr_head": current_pr_head,
+                }
+                print(json.dumps(error), file=sys.stderr)
+                return 2
     except Exception as exc:
         error = {"status": "ERROR", "error": str(exc)}
         if isinstance(
@@ -522,7 +554,7 @@ def main(argv=None) -> int:
             (CodexInvocationError, InvalidAgentResult, AgentRepositoryMutationError),
         ):
             try:
-                unverified_artifacts = _worktree_status(Path(args.repo).resolve())
+                unverified_artifacts = _worktree_status(repo)
             except Exception:
                 unverified_artifacts = []
             if unverified_artifacts:

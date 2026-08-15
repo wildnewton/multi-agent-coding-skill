@@ -47,6 +47,7 @@ Testing and Review always return to Coordinator and never choose the next agent.
 - Codex role invocations are bounded background jobs. Hermes dispatches `run_codex.py` with `background=true` and `notify_on_complete=true`; the immediate background start result is dispatch evidence only, never an agent result. Keep the workflow sequential with at most one role invocation in flight, and do not route until that process has completed and its wrapper result has been retrieved.
 - A Coordinator specialist handoff remains unresolved until the specialist completes and Hermes accepts the required mechanical evidence. On timeout, `BLOCKED`, invalid output, or failed verification, Hermes investigates the mechanical failure and returns that evidence to Coordinator; Hermes does not perform specialist work or choose the semantic recovery route. Coordinator recovery while a specialist remains unresolved is read-only. `run_codex.py` owns the detailed handoff-state enforcement.
 - If `run_codex.py` returns `ERROR`, treat any reported `unverified_artifacts` as failed-invocation leftovers: do not commit or reinterpret them as agent output. Hermes never finishes agent domain work or chooses a replacement semantic route. If Coordinator itself is `BLOCKED`, invalid, or cannot run, stop and report the failure to the user.
+- A `run_codex.py` `ERROR` with `error_code=MERGE_PR_HEAD_MISMATCH` is mechanical stale-readiness evidence, not a Coordinator semantic failure; resume Coordinator with the reported `reviewed_head` and `current_pr_head`.
 - Testing owns RED intent; Coordinator routes test corrections back rather than rewriting or weakening RED tests.
 - RED is for executable behavior. Do not manufacture automated contract tests for prompt/SKILL/docs/config-only changes; review them directly and validate through real execution when applicable.
 - Review owns fresh-eyes certification; Coordinator never self-certifies. `run_codex.py` records the current clean Review certification used by the merge gate.
@@ -118,7 +119,7 @@ Coordinator then chooses the smallest justified next action: Testing, direct imp
 
 Only Coordinator may return `AWAIT_USER_MERGE`, and only when no required external/manual gate remains unresolved. The result must include `reviewed_head` and `draft=false`.
 
-`run_codex.py` rejects merge readiness when a specialist handoff is unresolved or current HEAD lacks clean Review certification.
+`run_codex.py` rejects merge readiness when a specialist handoff is unresolved, current HEAD lacks clean Review certification, or the actual GitHub PR HEAD differs from `reviewed_head`.
 
 Hermes then verifies the remaining mechanical/external gates:
 
@@ -127,7 +128,7 @@ Hermes then verifies the remaining mechanical/external gates:
 - the PR description has not changed since that `REVIEW_CLEAN`;
 - no required external/manual gate remains unresolved.
 
-Only after those checks pass, Hermes marks a Draft PR ready if needed and verifies GitHub reports `draft=false`. Then ask the user whether to merge. On explicit approval, Hermes performs the squash merge and closes linked issues.
+Only after those checks pass, Hermes marks a Draft PR ready if needed and verifies GitHub reports `draft=false`. Then ask the user whether to merge. On explicit approval, Hermes performs the squash merge with `reviewed_head` as the atomic expected-head precondition. If the PR HEAD has moved, do not merge; resume Coordinator with the current PR HEAD and mismatch evidence. Close linked issues only after a successful merge.
 
 ## Result contract
 

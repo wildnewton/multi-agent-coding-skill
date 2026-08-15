@@ -76,7 +76,7 @@ def _load_state(path: Path, workflow_id: str) -> dict:
             "workflow_id": workflow_id,
             "sessions": {},
             "pending_agent": None,
-            "pending_agent_completed": False,
+            "pending_result_ready": False,
             "review_clean_head": None,
         }
     state = json.loads(path.read_text(encoding="utf-8"))
@@ -88,7 +88,7 @@ def _load_state(path: Path, workflow_id: str) -> dict:
     state.setdefault("workflow_id", workflow_id)
     state.setdefault("sessions", {})
     state.setdefault("pending_agent", None)
-    state.setdefault("pending_agent_completed", False)
+    state.setdefault("pending_result_ready", False)
     state.setdefault("review_clean_head", None)
     return state
 
@@ -302,13 +302,13 @@ def invoke_agent(
                 f"cannot complete {completed_agent!r}; pending_agent is "
                 f"{state.get('pending_agent')!r}"
             )
-        if not state.get("pending_agent_completed"):
+        if not state.get("pending_result_ready"):
             raise InvalidAgentResult(
                 f"cannot complete {completed_agent!r}; the pending specialist "
                 "has not produced a completed role-valid result"
             )
         state["pending_agent"] = None
-        state["pending_agent_completed"] = False
+        state["pending_result_ready"] = False
         _save_state(state_file, state)
 
     pending_agent = state.get("pending_agent")
@@ -403,7 +403,7 @@ def invoke_agent(
                         "full_test_command or full_test_unavailable_reason"
                     )
             state["pending_agent"] = next_agent
-            state["pending_agent_completed"] = False
+            state["pending_result_ready"] = False
             if next_agent == "review":
                 state["review_clean_head"] = None
         else:
@@ -441,10 +441,10 @@ def invoke_agent(
                     )
 
     if agent == "testing" and status == "RED_COMPLETE":
-        state["pending_agent_completed"] = True
+        state["pending_result_ready"] = True
 
     if agent == "review" and status in {"REVIEW_CLEAN", "CHANGES_REQUIRED"}:
-        state["pending_agent_completed"] = True
+        state["pending_result_ready"] = True
         if status == "REVIEW_CLEAN":
             state["review_clean_head"] = repository_guard["head"]
 

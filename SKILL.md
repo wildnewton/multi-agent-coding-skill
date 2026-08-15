@@ -45,12 +45,11 @@ Testing and Review always return to Coordinator and never choose the next agent.
 - Hermes owns all git/GitHub mutation: branch/commit/push, restore/reset/clean/rebase/merge, PR creation/metadata/comments, Draft→Ready, and final merge. Agents may inspect git/GitHub read-only but must not mutate local or remote repository state, including through GitHub APIs. Git/GitHub mutation is not agent work, so inability to perform it is not a valid `BLOCKED` reason.
 - Every Codex invocation starts from a clean worktree. Coordinator/Testing may leave only role-permitted unstaged edits; Review must leave the worktree unchanged.
 - Codex role invocations are bounded background jobs. Hermes dispatches `run_codex.py` with `background=true` and `notify_on_complete=true`; the immediate background start result is dispatch evidence only, never an agent result. Keep the workflow sequential with at most one role invocation in flight, and do not route until that process has completed and its wrapper result has been retrieved.
-- Coordinator `HANDOFF` establishes `pending_agent` ownership for the requested specialist. Timeout, invalid output, `BLOCKED`, or failed Hermes mechanical verification does not release that ownership. Hermes first investigates the execution/mechanical failure and restores a clean state when needed, then resumes Coordinator with the evidence while the handoff remains unresolved. Coordinator recovery with unresolved `pending_agent` is read-only: it may retry, narrow/restructure, reroute, ask the user, or return `BLOCKED`, but must not perform the unfinished specialist work. Only a new Coordinator `HANDOFF` may keep or transfer pending specialist ownership.
-- Hermes uses `--completed-agent <testing|review>` only when resuming Coordinator after the pending specialist produced a completed role-valid result and the existing Hermes mechanical acceptance for that handoff passed. Without that completion handshake, `pending_agent` remains unresolved.
+- A Coordinator specialist handoff remains unresolved until the specialist completes and Hermes accepts the required mechanical evidence. On timeout, `BLOCKED`, invalid output, or failed verification, Hermes investigates the mechanical failure and returns that evidence to Coordinator; Hermes does not perform specialist work or choose the semantic recovery route. Coordinator recovery while a specialist remains unresolved is read-only. `run_codex.py` owns the detailed handoff-state enforcement.
 - If `run_codex.py` returns `ERROR`, treat any reported `unverified_artifacts` as failed-invocation leftovers: do not commit or reinterpret them as agent output. Hermes never finishes agent domain work or chooses a replacement semantic route. If Coordinator itself is `BLOCKED`, invalid, or cannot run, stop and report the failure to the user.
 - Testing owns RED intent; Coordinator routes test corrections back rather than rewriting or weakening RED tests.
 - RED is for executable behavior. Do not manufacture automated contract tests for prompt/SKILL/docs/config-only changes; review them directly and validate through real execution when applicable.
-- Review owns fresh-eyes certification; Coordinator never self-certifies. A new Coordinator handoff to Review invalidates any previous `review_clean_head`; only valid `REVIEW_CLEAN` records the actual reviewed HEAD.
+- Review owns fresh-eyes certification; Coordinator never self-certifies. `run_codex.py` records the current clean Review certification used by the merge gate.
 - `REVIEW_CLEAN` certifies code review only. Required external/manual gates may remain open and still block merge readiness.
 - Never merge without explicit user approval.
 
@@ -71,13 +70,7 @@ python3 <skill-dir>/run_codex.py \
 
 Launch that command with Hermes terminal `background=true` and `notify_on_complete=true`. Record the returned background `session_id`, but do not treat the immediate spawn `exit_code=0` as role completion. Wait for the completion notification, then retrieve the completed process result/output before validating `HERMES_RESULT` or dispatching another role. Do not change Hermes global terminal timeout or `TERMINAL_MAX_FOREGROUND_TIMEOUT` for this workflow.
 
-When resuming Coordinator after an accepted specialist handoff, add exactly the matching completion handshake:
-
-```bash
---completed-agent <testing|review>
-```
-
-Omit it after timeout, `BLOCKED`, invalid output, or failed mechanical verification; those cases leave the specialist handoff unresolved.
+After Hermes accepts a specialist handoff, resume Coordinator with `--completed-agent <testing|review>`. Omit the flag for unresolved/failed handoffs; `run_codex.py` validates the detailed state contract.
 
 Start with Coordinator using the user request, acceptance criteria, repository/PR state, and relevant workflow evidence.
 
@@ -97,11 +90,11 @@ Hermes verifies only the mechanical workflow evidence:
 
 If mechanical verification passes, Hermes creates/pushes the RED commit and opens a draft PR after the first RED when none exists. Resume Coordinator with `--completed-agent testing`, the Testing result, RED SHA, actual test output, and current HEAD/PR state. Coordinator decides whether the RED evidence is semantically sufficient or should return to Testing.
 
-On Testing `BLOCKED`, timeout, invalid output, or failed mechanical verification, do not clear the pending Testing handoff. Hermes investigates the mechanical failure, restores the clean pre-invocation HEAD when needed, and resumes Coordinator **without** `--completed-agent`, including the decisive failure evidence. That Coordinator recovery invocation is read-only and chooses the next semantic action.
+On `BLOCKED` or failed invocation/verification, Hermes investigates/restores as needed and resumes Coordinator without the completion flag, including the decisive failure evidence.
 
 ### 3. GREEN -> Review -> Coordinator
 
-Coordinator implements the smallest GREEN and leaves edits unstaged. A Review handoff requires non-empty `task`/`reason` plus exactly one of `full_test_command` or `full_test_unavailable_reason`. If this workflow has verified RED, the targeted command comes from Testing's latest verified result. The Review handoff invalidates any prior clean Review certification.
+Coordinator implements the smallest GREEN and leaves edits unstaged. A Review handoff requires non-empty `task`/`reason` plus exactly one of `full_test_command` or `full_test_unavailable_reason`. If this workflow has verified RED, the targeted command comes from Testing's latest verified result.
 
 Before Review, Hermes verifies:
 
@@ -113,7 +106,7 @@ On failure, discard unverified edits and resume Coordinator with evidence. On su
 
 Then Hermes checks configured CI and updates the PR description from Coordinator-supplied semantic content. Invoke a fresh Review with the issue/request reference, current HEAD, pinned requirement/AC/scope, relevant RED evidence when applicable, PR description/diff, relevant prior findings, and mechanical production/test diff stats when available.
 
-A valid `REVIEW_CLEAN` records the actual reviewed HEAD as `review_clean_head`; `CHANGES_REQUIRED` does not. Either `REVIEW_CLEAN` or `CHANGES_REQUIRED` completes the Review work, so resume Coordinator with `--completed-agent review`, the reviewed HEAD, and findings/gates. On Review `BLOCKED`, timeout, or invalid output, leave the Review handoff pending; Hermes investigates the mechanical failure and resumes Coordinator read-only without the completion handshake. `REVIEW_CLEAN` does **not** automatically mark a Draft PR ready.
+`REVIEW_CLEAN` or `CHANGES_REQUIRED` completes Review work; after either accepted result, resume Coordinator with `--completed-agent review`. On Review failure/`BLOCKED`, investigate and resume Coordinator without the completion flag. `REVIEW_CLEAN` does **not** automatically mark a Draft PR ready.
 
 Coordinator then chooses the smallest justified next action: Testing, direct implementation when behavior is already pinned, fresh Review, user decision/action, or no mandatory work.
 
@@ -125,7 +118,7 @@ Coordinator then chooses the smallest justified next action: Testing, direct imp
 
 Only Coordinator may return `AWAIT_USER_MERGE`, and only when no required external/manual gate remains unresolved. The result must include `reviewed_head` and `draft=false`.
 
-`run_codex.py` rejects merge readiness unless there is no unresolved `pending_agent` and `reviewed_head == review_clean_head == current HEAD`.
+`run_codex.py` rejects merge readiness when a specialist handoff is unresolved or current HEAD lacks clean Review certification.
 
 Hermes then verifies the remaining mechanical/external gates:
 

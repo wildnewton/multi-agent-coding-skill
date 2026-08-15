@@ -319,6 +319,8 @@ def invoke_agent(
         and state.get("pending_result_ready")
     ):
         state["pending_result_ready"] = False
+        if pending_agent == "review":
+            state["review_clean_head"] = None
         _save_state(state_file, state)
 
     if agent in {"testing", "review"} and pending_agent != agent:

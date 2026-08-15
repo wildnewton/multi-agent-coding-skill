@@ -531,6 +531,24 @@ class InvokeAgentTests(unittest.TestCase):
                 completed_agent="testing",
             )
 
+    def test_recovery_without_completion_invalidates_review_clean_head(self):
+        coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_RESULT)])
+        self.invoke("coordinator", coordinator)
+        review = FakeRunner([codex_stdout("R52", REVIEW_RESULT)])
+        self.invoke("review", review)
+
+        state = self.read_state()
+        self.assertIs(state["pending_result_ready"], True)
+        self.assertIsNotNone(state["review_clean_head"])
+
+        recovery = FakeRunner([codex_stdout("C52", COORDINATOR_DECISION_RESULT)])
+        self.invoke("coordinator", recovery)
+
+        state = self.read_state()
+        self.assertEqual(state["pending_agent"], "review")
+        self.assertIs(state["pending_result_ready"], False)
+        self.assertIsNone(state["review_clean_head"])
+
     def test_completed_agent_handshake_must_match_pending_agent(self):
         coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_TESTING_RESULT)])
         self.invoke("coordinator", coordinator)

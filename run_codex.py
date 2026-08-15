@@ -313,6 +313,15 @@ def invoke_agent(
 
     pending_agent = state.get("pending_agent")
     if (
+        agent == "coordinator"
+        and pending_agent is not None
+        and completed_agent is None
+        and state.get("pending_result_ready")
+    ):
+        state["pending_result_ready"] = False
+        _save_state(state_file, state)
+
+    if (
         agent in {"testing", "review"}
         and pending_agent is not None
         and pending_agent != agent

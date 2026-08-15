@@ -471,7 +471,7 @@ class InvokeAgentTests(unittest.TestCase):
 
         state = self.read_state()
         self.assertEqual(state["pending_agent"], "testing")
-        self.assertIs(state["pending_agent_completed"], False)
+        self.assertIs(state["pending_result_ready"], False)
 
     def test_completed_agent_handshake_must_match_pending_agent(self):
         coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_TESTING_RESULT)])

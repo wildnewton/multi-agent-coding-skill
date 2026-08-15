@@ -162,7 +162,7 @@ For this skill repository:
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 -m compileall -q run_codex.py scripts/smoke_issue_9_background_timeout.py
+python3 -m compileall -q run_codex.py tests/smoke_long_running_invocation.py
 ```
 
 For an end-to-end smoke test, use a small real issue and confirm: Coordinator can loop through Testing/Review without user nudges; each verified handoff leaves an audit comment; every Codex invocation starts clean; Hermes-created commits are visible HEAD; Review sessions are fresh; code-clean Review can coexist with an unresolved external gate; and merge cannot proceed while a required gate remains open or the PR remains Draft.

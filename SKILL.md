@@ -122,12 +122,13 @@ Only Coordinator may return `AWAIT_USER_MERGE`, and only when no required extern
 
 Hermes then verifies the remaining mechanical/external gates:
 
+- the actual GitHub PR HEAD equals `reviewed_head`;
 - worktree is clean;
 - applicable targeted/full tests and configured CI pass;
 - the PR description has not changed since that `REVIEW_CLEAN`;
 - no required external/manual gate remains unresolved.
 
-Only after those checks pass, Hermes marks a Draft PR ready if needed and verifies GitHub reports `draft=false`. Then ask the user whether to merge. On explicit approval, Hermes performs the squash merge and closes linked issues.
+Only after those checks pass, Hermes marks a Draft PR ready if needed and verifies GitHub reports `draft=false`. Then ask the user whether to merge. On explicit approval, Hermes performs the squash merge with `reviewed_head` as the atomic expected-head precondition. If the PR HEAD has moved, do not merge; resume Coordinator with the current PR HEAD and mismatch evidence. Close linked issues only after a successful merge.
 
 ## Result contract
 

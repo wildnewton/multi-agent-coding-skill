@@ -32,6 +32,7 @@ AGENTS = {
 }
 
 RESULT_MARKER = "HERMES_RESULT="
+DEFAULT_AGENT_TIMEOUT_SECONDS = 1800
 GIT_OWNERSHIP_POLICY = """Repository state policy:
 - Hermes owns all git and GitHub mutations.
 - You may inspect repository state with read-only commands such as git status, git diff, git log, git show, git rev-parse, and read-only gh queries.
@@ -57,7 +58,7 @@ class AgentRepositoryMutationError(RuntimeError):
     """Raised when a Codex agent mutates git or remote repository state."""
 
 
-def _default_runner(command, cwd, input_text):
+def _default_runner(command, cwd, input_text, *, timeout_seconds):
     return subprocess.run(
         command,
         cwd=cwd,
@@ -65,6 +66,7 @@ def _default_runner(command, cwd, input_text):
         text=True,
         capture_output=True,
         check=False,
+        timeout=timeout_seconds,
     )
 
 
@@ -106,9 +108,13 @@ def _git(repo: Path, *args: str, allow_failure: bool = False) -> subprocess.Comp
     return completed
 
 
-def _ensure_clean_worktree(repo: Path) -> None:
+def _worktree_status(repo: Path) -> list[str]:
     completed = _git(repo, "status", "--porcelain", "--untracked-files=all")
-    if completed.stdout.strip():
+    return [line for line in completed.stdout.splitlines() if line.strip()]
+
+
+def _ensure_clean_worktree(repo: Path) -> None:
+    if _worktree_status(repo):
         raise DirtyWorktreeError(
             "agent invocation requires a clean worktree; Hermes must commit or "
             "discard the previous agent's changes first"
@@ -244,10 +250,13 @@ def invoke_agent(
     task: str,
     state_file: str | Path,
     prompt_dir: str | Path,
-    runner: Callable = _default_runner,
+    runner: Callable | None = None,
+    timeout_seconds: int = DEFAULT_AGENT_TIMEOUT_SECONDS,
 ) -> dict:
     if agent not in AGENTS:
         raise ValueError(f"unknown agent {agent!r}; expected one of {', '.join(AGENTS)}")
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
 
     repo = Path(repo).resolve()
     if not repo.is_dir():
@@ -275,7 +284,22 @@ def invoke_agent(
         task=task,
         include_role=session_id is None,
     )
-    completed = runner(command, repo, prompt)
+    try:
+        if runner is None:
+            completed = _default_runner(
+                command,
+                repo,
+                prompt,
+                timeout_seconds=timeout_seconds,
+            )
+        else:
+            completed = runner(command, repo, prompt)
+    except subprocess.TimeoutExpired as exc:
+        _verify_agent_did_not_mutate_repository(repo, repository_guard)
+        raise CodexInvocationError(
+            f"Codex timed out after {timeout_seconds} seconds"
+        ) from exc
+
     _verify_agent_did_not_mutate_repository(repo, repository_guard)
     if agent == "review":
         try:
@@ -364,6 +388,12 @@ def main(argv=None) -> int:
     parser.add_argument("--task", required=True)
     parser.add_argument("--state-file")
     parser.add_argument("--prompt-dir")
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=DEFAULT_AGENT_TIMEOUT_SECONDS,
+        help=f"Codex subprocess timeout in seconds (default: {DEFAULT_AGENT_TIMEOUT_SECONDS})",
+    )
     args = parser.parse_args(argv)
 
     root = Path(__file__).resolve().parent
@@ -380,9 +410,18 @@ def main(argv=None) -> int:
             task=args.task,
             state_file=state_file,
             prompt_dir=prompt_dir,
+            timeout_seconds=args.timeout_seconds,
         )
     except Exception as exc:
-        print(json.dumps({"status": "ERROR", "error": str(exc)}), file=sys.stderr)
+        error = {"status": "ERROR", "error": str(exc)}
+        if isinstance(exc, (CodexInvocationError, InvalidAgentResult)):
+            try:
+                unverified_artifacts = _worktree_status(Path(args.repo).resolve())
+            except Exception:
+                unverified_artifacts = []
+            if unverified_artifacts:
+                error["unverified_artifacts"] = unverified_artifacts
+        print(json.dumps(error), file=sys.stderr)
         return 2
 
     print(json.dumps(result, separators=(",", ":")))

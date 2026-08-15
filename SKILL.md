@@ -165,21 +165,4 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q run_codex.py scripts/smoke_issue_9_background_timeout.py
 ```
 
-For issue #9, a fast local sanity run may shorten the smoke boundary:
-
-```bash
-python3 scripts/smoke_issue_9_background_timeout.py \
-  --sleep-seconds 0.2 \
-  --require-survive-seconds 0 \
-  --timeout-seconds 5
-```
-
-Before issue #9 is closed, run the real smoke command through Hermes terminal with `background=true` and `notify_on_complete=true`:
-
-```bash
-python3 scripts/smoke_issue_9_background_timeout.py
-```
-
-Record the returned Hermes background session id plus the harness `started`, `alive_after_survival_boundary`, and `completed` evidence. The default harness requires the child wrapper to remain alive beyond 300 seconds and complete before its 1800-second deadline. This smoke test is an explicit/manual closure gate, not normal CI.
-
 For an end-to-end smoke test, use a small real issue and confirm: Coordinator can loop through Testing/Review without user nudges; each verified handoff leaves an audit comment; every Codex invocation starts clean; Hermes-created commits are visible HEAD; Review sessions are fresh; code-clean Review can coexist with an unresolved external gate; and merge cannot proceed while a required gate remains open or the PR remains Draft.

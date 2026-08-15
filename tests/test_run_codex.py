@@ -455,6 +455,24 @@ class InvokeAgentTests(unittest.TestCase):
 
         self.assertEqual(self.read_state()["pending_agent"], "testing")
 
+    def test_timeout_cannot_be_cleared_by_completion_handshake(self):
+        coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_TESTING_RESULT)])
+        self.invoke("coordinator", coordinator)
+
+        def timeout_runner(command, cwd, input_text):
+            raise subprocess.TimeoutExpired(command, 10)
+
+        with self.assertRaises(CodexInvocationError):
+            self.invoke("testing", timeout_runner)
+
+        decision = FakeRunner([codex_stdout("C52", COORDINATOR_DECISION_RESULT)])
+        with self.assertRaises(InvalidAgentResult):
+            self.invoke("coordinator", decision, completed_agent="testing")
+
+        state = self.read_state()
+        self.assertEqual(state["pending_agent"], "testing")
+        self.assertIs(state["pending_agent_completed"], False)
+
     def test_completed_agent_handshake_must_match_pending_agent(self):
         coordinator = FakeRunner([codex_stdout("C52", COORDINATOR_TESTING_RESULT)])
         self.invoke("coordinator", coordinator)

@@ -232,11 +232,23 @@ class GitOwnershipContractTests(unittest.TestCase):
                 with self.assertRaises(InvalidAgentResult):
                     self.invoke("coordinator", output)
 
-    def test_await_user_merge_accepts_explicit_draft_false(self):
+    def test_await_user_merge_accepts_explicit_draft_false_after_clean_review(self):
+        head = self._git("rev-parse", "HEAD").stdout.strip()
+        self.state_file.write_text(
+            json.dumps(
+                {
+                    "workflow_id": "issue-137",
+                    "sessions": {},
+                    "pending_agent": None,
+                    "review_clean_head": head,
+                }
+            ),
+            encoding="utf-8",
+        )
         result, _ = self.invoke(
             "coordinator",
             'HERMES_RESULT={"status":"AWAIT_USER_MERGE",'
-            '"reviewed_head":"abc123","draft":false}',
+            f'"reviewed_head":"{head}","draft":false}}',
         )
 
         self.assertEqual(result["status"], "AWAIT_USER_MERGE")

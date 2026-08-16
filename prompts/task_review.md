@@ -24,7 +24,7 @@ You are read-only. Return findings only to Coordinator through Hermes; never cho
 
 Use `CHANGES_REQUIRED` when the task contract still has a blocking problem, including an unconfirmed essential premise, unsupported root cause, material ambiguity, missing acceptance criterion, unbounded scope, or another issue that must be corrected before implementation.
 
-Use `TASK_REVIEW_CLEAN` only when the task is sufficiently evidenced, clear, scoped, and testable for implementation to begin.
+Use `TASK_REVIEW_CLEAN` only when the reviewed input task itself is sufficiently evidenced, clear, scoped, and testable for implementation to begin. If your recommended requirement, acceptance criteria, or scope would materially differ from that reviewed task, return `CHANGES_REQUIRED` so Coordinator can revise the canonical task and submit it to a fresh Task Review. A clean result may clarify or restate the reviewed task, but must not introduce a material semantic change.
 
 For either completed status, include all four fields with concise but complete content:
 

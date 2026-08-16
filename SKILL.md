@@ -88,7 +88,7 @@ Task Review is read-only and fresh. It inspects the task and relevant code/tests
 - `CHANGES_REQUIRED` when the task contract still needs correction; or
 - `BLOCKED` when required evidence/repository access prevents safe review.
 
-`TASK_REVIEW_CLEAN` and `CHANGES_REQUIRED` must carry the four Task Review outputs defined by the prompt. For an issue-backed workflow, Hermes then publishes exactly one Task Review result comment on the canonical Issue. The comment must contain the exact reviewed task, the current task checkpoint, the verdict, and the four Task Review outputs. Use explicit lines `Task checkpoint: <checkpoint>` and `Verdict: <TASK_REVIEW_CLEAN|CHANGES_REQUIRED>` with the checkpoint and verdict in backticks so the runner can verify them without parsing the rest of the Markdown.
+`TASK_REVIEW_CLEAN` and `CHANGES_REQUIRED` must carry the four Task Review outputs defined by the prompt. The wrapper also returns `task_review_checkpoint`, which is the runner-computed checkpoint for that reviewed task. For an issue-backed workflow, Hermes publishes exactly one Task Review result comment on the canonical Issue and copies that returned checkpoint into the comment. The comment must contain the exact reviewed task, the current task checkpoint, the verdict, and the four Task Review outputs. Use explicit lines `Task checkpoint: <checkpoint>` and `Verdict: <TASK_REVIEW_CLEAN|CHANGES_REQUIRED>` with the checkpoint and verdict in backticks so the runner can verify them without parsing the rest of the Markdown.
 
 Only after GitHub returns the new comment id, resume Coordinator with both `--completed-agent task_review` and `--task-review-comment-id <id>`. Before clearing the pending specialist, `run_codex.py` verifies read-only that the supplied comment belongs to the Issue derived from `issue-<number>` and identifies the current checkpoint and expected verdict. Missing, stale, wrong-Issue, wrong-checkpoint, or wrong-verdict evidence fails closed and leaves Task Review pending for mechanical correction/retry; do not rerun semantic Task Review merely because Issue-comment publication failed.
 
@@ -171,7 +171,7 @@ For issue-backed workflows, the completed Task Review result belongs on the cano
 Each Task Review Issue comment includes:
 
 - exact reviewed task;
-- `Task checkpoint: <checkpoint>`;
+- `Task checkpoint: <checkpoint>` using the wrapper-returned `task_review_checkpoint`;
 - `Verdict: <TASK_REVIEW_CLEAN|CHANGES_REQUIRED>`;
 - `evidence_and_root_cause`;
 - `clearer_requirement`;

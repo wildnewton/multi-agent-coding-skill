@@ -88,9 +88,7 @@ Task Review is read-only and fresh. It inspects the task and relevant code/tests
 - `CHANGES_REQUIRED` when the task contract still needs correction; or
 - `BLOCKED` when required evidence/repository access prevents safe review.
 
-`TASK_REVIEW_CLEAN` and `CHANGES_REQUIRED` must carry the four Task Review outputs defined by the prompt. The wrapper also returns `task_review_checkpoint`, which is the runner-computed checkpoint for that reviewed task. For an issue-backed workflow, Hermes publishes exactly one Task Review result comment on the canonical Issue and copies that returned checkpoint into the comment. The comment must contain the exact reviewed task, the current task checkpoint, the verdict, and the four Task Review outputs. Use explicit lines `Task checkpoint: <checkpoint>` and `Verdict: <TASK_REVIEW_CLEAN|CHANGES_REQUIRED>` with the checkpoint and verdict in backticks so the runner can verify them without parsing the rest of the Markdown.
-
-Only after GitHub returns the new comment id, resume Coordinator with both `--completed-agent task_review` and `--task-review-comment-id <id>`. Before clearing the pending specialist, `run_codex.py` verifies read-only that the supplied comment belongs to the Issue derived from `issue-<number>` and identifies the current checkpoint and expected verdict. Missing, stale, wrong-Issue, wrong-checkpoint, or wrong-verdict evidence fails closed and leaves Task Review pending for mechanical correction/retry; do not rerun semantic Task Review merely because Issue-comment publication failed.
+`TASK_REVIEW_CLEAN` and `CHANGES_REQUIRED` must carry the four Task Review outputs defined by the prompt. The wrapper also returns the runner-computed `task_review_checkpoint`. For issue-backed workflows, publish and verify the completed review according to **Task Review Issue audit trail** before resuming Coordinator.
 
 On `CHANGES_REQUIRED`, after the audited completion is accepted, Coordinator updates the canonical task and must route it to a **fresh** Task Review again. Repeat until `TASK_REVIEW_CLEAN`. On Task Review timeout/`BLOCKED`/invalid output/checkpoint mismatch/failed verification, investigate mechanically and resume Coordinator without the completion flag; implementation remains closed.
 
@@ -178,7 +176,9 @@ Each Task Review Issue comment includes:
 - `acceptance_criteria`;
 - `simplest_approach`.
 
-The checkpoint and verdict lines are mechanically verified by `run_codex.py` during `--completed-agent task_review`. The remaining visible fields preserve the requirement-review history for humans without adding a separate task-version/history state model.
+After publishing, pass the returned comment id with both `--completed-agent task_review` and `--task-review-comment-id <id>` when resuming Coordinator. Before clearing the pending specialist, `run_codex.py` verifies read-only that the supplied comment belongs to the Issue derived from `issue-<number>` and contains the current checkpoint and expected verdict. Missing, stale, wrong-Issue, wrong-checkpoint, or wrong-verdict evidence fails closed and leaves Task Review pending for mechanical correction/retry.
+
+The remaining visible fields preserve the requirement-review history without adding a separate task-version/history state model.
 
 ## PR handoff audit trail
 

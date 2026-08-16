@@ -21,7 +21,10 @@ class TaskReviewAuditBoundaryTests(unittest.TestCase):
             ["gh"], 0, stdout=json.dumps(payload), stderr=""
         )
 
-        with patch("run_codex.subprocess.run", return_value=completed) as run:
+        with (
+            patch.dict("run_codex.os.environ", {"GH_REPO": "wrong/repo"}),
+            patch("run_codex.subprocess.run", return_value=completed) as run,
+        ):
             result = _fetch_issue_comment(repo, 123)
 
         self.assertEqual(result, payload)
@@ -31,6 +34,7 @@ class TaskReviewAuditBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(run.call_args.kwargs["cwd"], repo)
         self.assertEqual(run.call_args.kwargs["env"]["GH_PROMPT_DISABLED"], "1")
+        self.assertNotIn("GH_REPO", run.call_args.kwargs["env"])
 
     def test_fetch_issue_comment_nonzero_fails_closed(self):
         completed = subprocess.CompletedProcess(

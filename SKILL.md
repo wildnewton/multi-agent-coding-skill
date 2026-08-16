@@ -76,7 +76,7 @@ python3 <skill-dir>/run_codex.py \
 
 Launch that command with Hermes terminal `background=true` and `notify_on_complete=true`. Record the returned background `session_id`, but do not treat the immediate spawn `exit_code=0` as role completion. Wait for the completion notification, then retrieve the completed process result/output before validating `HERMES_RESULT` or dispatching another role. Do not change Hermes global terminal timeout or `TERMINAL_MAX_FOREGROUND_TIMEOUT` for this workflow.
 
-After Hermes accepts a specialist handoff, resume Coordinator with `--completed-agent <task_review|testing|review>`. Omit the flag for unresolved/failed handoffs; `run_codex.py` validates the detailed state contract.
+After Hermes accepts a specialist handoff, resume Coordinator with `--completed-agent <task_review|testing|review>`. Resume Coordinator without `--completed-agent` only for specialist recovery; Task Review audit-only failures stay pending.
 
 Start with Coordinator using the user request, acceptance criteria, repository/PR state, and relevant workflow evidence. Before Task Review is clean, Coordinator is repository-read-only and may only inspect/diagnose, refine the canonical task, ask for a real user decision, block, or hand off to Task Review.
 

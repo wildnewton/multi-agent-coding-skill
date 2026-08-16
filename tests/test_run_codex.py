@@ -71,7 +71,7 @@ class InvokeAgentTests(unittest.TestCase):
         self.state_file = self.root / "workflow.json"
         self.prompts = self.root / "prompts"
         self.prompts.mkdir()
-        for role in ("testing", "coordinator", "review"):
+        for role in ("testing", "coordinator", "task_review", "review"):
             (self.prompts / f"{role}.md").write_text(
                 f"ROLE:{role}\n", encoding="utf-8"
             )
@@ -82,6 +82,20 @@ class InvokeAgentTests(unittest.TestCase):
         (self.repo / "README.md").write_text("clean\n", encoding="utf-8")
         self._git("add", "README.md")
         self._git("commit", "-m", "initial")
+        self.state_file.write_text(
+            json.dumps(
+                {
+                    "workflow_id": "issue-51",
+                    "sessions": {},
+                    "pending_agent": None,
+                    "pending_result_ready": False,
+                    "review_clean_head": None,
+                    "pending_task_review_checkpoint": None,
+                    "task_review_clean_checkpoint": "fixture-approved",
+                }
+            ),
+            encoding="utf-8",
+        )
 
     def _git(self, *args):
         return subprocess.run(
@@ -123,6 +137,8 @@ class InvokeAgentTests(unittest.TestCase):
                     "pending_agent": agent,
                     "pending_result_ready": False,
                     "review_clean_head": None,
+                    "pending_task_review_checkpoint": None,
+                    "task_review_clean_checkpoint": "fixture-approved",
                 }
             ),
             encoding="utf-8",
@@ -621,7 +637,10 @@ class InvokeAgentTests(unittest.TestCase):
                     "workflow_id": "issue-51",
                     "sessions": {},
                     "pending_agent": None,
+                    "pending_result_ready": False,
                     "review_clean_head": head,
+                    "pending_task_review_checkpoint": None,
+                    "task_review_clean_checkpoint": "fixture-approved",
                 }
             ),
             encoding="utf-8",
@@ -655,7 +674,10 @@ class InvokeAgentTests(unittest.TestCase):
                     "workflow_id": "issue-51",
                     "sessions": {},
                     "pending_agent": None,
+                    "pending_result_ready": False,
                     "review_clean_head": old_head,
+                    "pending_task_review_checkpoint": None,
+                    "task_review_clean_checkpoint": "fixture-approved",
                 }
             ),
             encoding="utf-8",

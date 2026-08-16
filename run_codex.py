@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,11 @@ AGENTS = {
         "persistent": True,
         "statuses": {"HANDOFF", "AWAIT_USER_DECISION", "AWAIT_USER_MERGE", "BLOCKED"},
     },
+    "task_review": {
+        "prompt": "task_review.md",
+        "persistent": False,
+        "statuses": {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED", "BLOCKED"},
+    },
     "review": {
         "prompt": "review.md",
         "persistent": False,
@@ -33,6 +39,12 @@ AGENTS = {
 
 RESULT_MARKER = "HERMES_RESULT="
 DEFAULT_AGENT_TIMEOUT_SECONDS = 1800
+TASK_REVIEW_FIELDS = (
+    "evidence_and_root_cause",
+    "clearer_requirement",
+    "acceptance_criteria",
+    "simplest_approach",
+)
 GIT_OWNERSHIP_POLICY = """Repository state policy:
 - Hermes owns all git and GitHub mutations.
 - You may inspect repository state with read-only commands such as git status, git diff, git log, git show, git rev-parse, and read-only gh queries.
@@ -78,6 +90,8 @@ def _load_state(path: Path, workflow_id: str) -> dict:
             "pending_agent": None,
             "pending_result_ready": False,
             "review_clean_head": None,
+            "pending_task_review_checkpoint": None,
+            "task_review_clean_checkpoint": None,
         }
     state = json.loads(path.read_text(encoding="utf-8"))
     if state.get("workflow_id") not in (None, workflow_id):
@@ -90,12 +104,18 @@ def _load_state(path: Path, workflow_id: str) -> dict:
     state.setdefault("pending_agent", None)
     state.setdefault("pending_result_ready", False)
     state.setdefault("review_clean_head", None)
+    state.setdefault("pending_task_review_checkpoint", None)
+    state.setdefault("task_review_clean_checkpoint", None)
     return state
 
 
 def _save_state(path: Path, state: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _task_review_checkpoint(task: str) -> str:
+    return hashlib.sha256(task.strip().encode("utf-8")).hexdigest()
 
 
 def _git(repo: Path, *args: str, allow_failure: bool = False) -> subprocess.CompletedProcess:
@@ -294,8 +314,8 @@ def invoke_agent(
         raise ValueError(f"unknown agent {agent!r}; expected one of {', '.join(AGENTS)}")
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
-    if completed_agent not in {None, "testing", "review"}:
-        raise ValueError("completed_agent must be testing, review, or None")
+    if completed_agent not in {None, "testing", "task_review", "review"}:
+        raise ValueError("completed_agent must be testing, task_review, review, or None")
     if completed_agent is not None and agent != "coordinator":
         raise InvalidAgentResult(
             "completed_agent may only be supplied when resuming Coordinator"
@@ -327,6 +347,8 @@ def invoke_agent(
             )
         state["pending_agent"] = None
         state["pending_result_ready"] = False
+        if completed_agent == "task_review":
+            state["pending_task_review_checkpoint"] = None
         _save_state(state_file, state)
 
     pending_agent = state.get("pending_agent")
@@ -337,27 +359,47 @@ def invoke_agent(
         and state.get("pending_result_ready")
     ):
         state["pending_result_ready"] = False
-        if pending_agent == "review":
+        if pending_agent == "task_review":
+            state["task_review_clean_checkpoint"] = None
+        elif pending_agent == "review":
             state["review_clean_head"] = None
         _save_state(state_file, state)
 
-    if agent in {"testing", "review"} and pending_agent != agent:
+    specialists = {"testing", "task_review", "review"}
+    if agent in specialists and pending_agent != agent:
         raise InvalidAgentResult(
             f"cannot invoke {agent!r}; pending_agent is {pending_agent!r}"
         )
 
-    if agent in {"testing", "review"}:
+    if agent in specialists:
         state["pending_result_ready"] = False
-        if agent == "review":
+        if agent == "task_review":
+            state["task_review_clean_checkpoint"] = None
+        elif agent == "review":
             state["review_clean_head"] = None
         _save_state(state_file, state)
 
+    task_review_checkpoint = None
+    if agent == "task_review":
+        task_review_checkpoint = _task_review_checkpoint(task)
+        if state.get("pending_task_review_checkpoint") != task_review_checkpoint:
+            raise InvalidAgentResult(
+                "Task Review invocation task does not match the pending task-review checkpoint"
+            )
+
     recovery_coordinator = agent == "coordinator" and pending_agent is not None
+    pre_task_review_coordinator = (
+        agent == "coordinator" and not state.get("task_review_clean_checkpoint")
+    )
     read_only_context = None
-    if agent == "review":
+    if agent == "task_review":
+        read_only_context = "Task Review"
+    elif agent == "review":
         read_only_context = "Review"
     elif recovery_coordinator:
         read_only_context = "Coordinator recovery"
+    elif pre_task_review_coordinator:
+        read_only_context = "Coordinator before clean Task Review"
 
     session_id = state["sessions"].get(agent) if config["persistent"] else None
     if session_id:
@@ -408,21 +450,37 @@ def invoke_agent(
             "agents must not include commit; Hermes owns git commit creation"
         )
 
-    if agent in {"testing", "review"} and "next_agent" in result:
+    if agent in specialists and "next_agent" in result:
         raise InvalidAgentResult(f"agent {agent!r} is not allowed to choose next_agent")
 
     if agent == "testing" and status == "RED_COMPLETE":
         _require_nonempty_text(result, "test_command", "Testing RED_COMPLETE")
 
+    if agent == "task_review" and status in {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED"}:
+        for field in TASK_REVIEW_FIELDS:
+            _require_nonempty_text(result, field, f"Task Review {status}")
+
     if agent == "coordinator":
         if status == "HANDOFF":
             next_agent = result.get("next_agent")
-            if next_agent not in {"testing", "review"}:
+            if next_agent not in specialists:
                 raise InvalidAgentResult(
-                    "Coordinator HANDOFF next_agent must be testing or review"
+                    "Coordinator HANDOFF next_agent must be testing, task_review, or review"
                 )
             _require_nonempty_text(result, "task", "Coordinator HANDOFF")
             _require_nonempty_text(result, "reason", "Coordinator HANDOFF")
+
+            if next_agent == "task_review":
+                state["task_review_clean_checkpoint"] = None
+                state["review_clean_head"] = None
+                state["pending_task_review_checkpoint"] = None
+                _save_state(state_file, state)
+                _ensure_read_only_worktree(repo, "Coordinator task-review handoff")
+            elif not state.get("task_review_clean_checkpoint"):
+                raise InvalidAgentResult(
+                    f"Coordinator cannot hand off to {next_agent!r} before TASK_REVIEW_CLEAN"
+                )
+
             if next_agent == "review":
                 has_full_command = _has_nonempty_text(result, "full_test_command")
                 has_unavailable_reason = _has_nonempty_text(
@@ -433,9 +491,14 @@ def invoke_agent(
                         "Coordinator review HANDOFF must include exactly one of "
                         "full_test_command or full_test_unavailable_reason"
                     )
+
             state["pending_agent"] = next_agent
             state["pending_result_ready"] = False
-            if next_agent == "review":
+            if next_agent == "task_review":
+                state["pending_task_review_checkpoint"] = _task_review_checkpoint(
+                    result["task"]
+                )
+            elif next_agent == "review":
                 state["review_clean_head"] = None
         else:
             if "next_agent" in result:
@@ -450,6 +513,10 @@ def invoke_agent(
                 _require_nonempty_text(
                     result, "reviewed_head", "Coordinator AWAIT_USER_MERGE"
                 )
+                if not state.get("task_review_clean_checkpoint"):
+                    raise InvalidAgentResult(
+                        "Coordinator AWAIT_USER_MERGE requires TASK_REVIEW_CLEAN"
+                    )
                 if result.get("draft") is not False:
                     raise InvalidAgentResult(
                         "Coordinator AWAIT_USER_MERGE must include draft=false"
@@ -473,6 +540,11 @@ def invoke_agent(
 
     if agent == "testing" and status == "RED_COMPLETE":
         state["pending_result_ready"] = True
+
+    if agent == "task_review" and status in {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED"}:
+        state["pending_result_ready"] = True
+        if status == "TASK_REVIEW_CLEAN":
+            state["task_review_clean_checkpoint"] = task_review_checkpoint
 
     if agent == "review" and status in {"REVIEW_CLEAN", "CHANGES_REQUIRED"}:
         state["pending_result_ready"] = True
@@ -508,7 +580,7 @@ def main(argv=None) -> int:
     )
     parser.add_argument(
         "--completed-agent",
-        choices=("testing", "review"),
+        choices=("testing", "task_review", "review"),
         help=(
             "Hermes completion handshake: clear the matching pending specialist "
             "only after its existing mechanical acceptance has passed"

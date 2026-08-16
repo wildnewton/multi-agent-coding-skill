@@ -472,6 +472,7 @@ def invoke_agent(
 
             if next_agent == "task_review":
                 state["task_review_clean_checkpoint"] = None
+                state["review_clean_head"] = None
                 state["pending_task_review_checkpoint"] = None
                 _save_state(state_file, state)
                 _ensure_read_only_worktree(repo, "Coordinator task-review handoff")

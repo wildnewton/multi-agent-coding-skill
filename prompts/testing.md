@@ -59,3 +59,5 @@ For completed RED work:
 If the work cannot be completed safely:
 
 `HERMES_RESULT={"status":"BLOCKED","summary":"<reason>"}`
+
+Hermes will verify the mechanical workflow evidence, create the RED commit, and return the result plus actual test output to Coordinator. Coordinator decides whether the RED evidence is semantically sufficient and what happens next.

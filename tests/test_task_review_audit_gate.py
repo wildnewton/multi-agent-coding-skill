@@ -10,15 +10,21 @@ from run_codex import InvalidAgentResult, invoke_agent
 
 class FakeRunner:
     def __call__(self, command, cwd, input_text):
-        payload = {
-            "type": "item.completed",
-            "item": {
-                "type": "agent_message",
-                "text": 'HERMES_RESULT={"status":"AWAIT_USER_DECISION","question":"continue?"}',
+        events = [
+            {"type": "thread.started", "thread_id": "C17"},
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "agent_message",
+                    "text": 'HERMES_RESULT={"status":"AWAIT_USER_DECISION","question":"continue?"}',
+                },
             },
-        }
+        ]
         return subprocess.CompletedProcess(
-            command, 0, stdout=json.dumps(payload) + "\n", stderr=""
+            command,
+            0,
+            stdout="\n".join(json.dumps(event) for event in events) + "\n",
+            stderr="",
         )
 
 

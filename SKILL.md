@@ -40,7 +40,7 @@ Task Review, Testing, and Review always return to Coordinator and never choose t
 2. `codex` is installed/authenticated.
 3. `gh` is installed/authenticated for PR operations; merge permission is needed only for a user-approved final merge.
 4. `run_codex.py` and `prompts/` are siblings of this file.
-5. Choose a stable workflow id, normally `issue-<number>` or `pr-<number>`.
+5. Choose a stable workflow id, normally `issue-<number>` or `pr-<number>`. An issue-backed workflow that uses Task Review must use `issue-<number>` so its Task Review audit can be mechanically bound to the canonical Issue.
 
 ## Global invariants
 
@@ -88,9 +88,11 @@ Task Review is read-only and fresh. It inspects the task and relevant code/tests
 - `CHANGES_REQUIRED` when the task contract still needs correction; or
 - `BLOCKED` when required evidence/repository access prevents safe review.
 
-`TASK_REVIEW_CLEAN` and `CHANGES_REQUIRED` must carry the four Task Review outputs defined by the prompt. After either accepted completed result, resume Coordinator with `--completed-agent task_review`.
+`TASK_REVIEW_CLEAN` and `CHANGES_REQUIRED` must carry the four Task Review outputs defined by the prompt. For an issue-backed workflow, Hermes then publishes exactly one Task Review result comment on the canonical Issue. The comment must contain the exact reviewed task, the current task checkpoint, the verdict, and the four Task Review outputs. Use explicit lines `Task checkpoint: <checkpoint>` and `Verdict: <TASK_REVIEW_CLEAN|CHANGES_REQUIRED>` with the checkpoint and verdict in backticks so the runner can verify them without parsing the rest of the Markdown.
 
-On `CHANGES_REQUIRED`, Coordinator updates the canonical task and must route it to a **fresh** Task Review again. Repeat until `TASK_REVIEW_CLEAN`. On Task Review timeout/`BLOCKED`/invalid output/checkpoint mismatch/failed verification, investigate mechanically and resume Coordinator without the completion flag; implementation remains closed.
+Only after GitHub returns the new comment id, resume Coordinator with both `--completed-agent task_review` and `--task-review-comment-id <id>`. Before clearing the pending specialist, `run_codex.py` verifies read-only that the supplied comment belongs to the Issue derived from `issue-<number>` and identifies the current checkpoint and expected verdict. Missing, stale, wrong-Issue, wrong-checkpoint, or wrong-verdict evidence fails closed and leaves Task Review pending for mechanical correction/retry; do not rerun semantic Task Review merely because Issue-comment publication failed.
+
+On `CHANGES_REQUIRED`, after the audited completion is accepted, Coordinator updates the canonical task and must route it to a **fresh** Task Review again. Repeat until `TASK_REVIEW_CLEAN`. On Task Review timeout/`BLOCKED`/invalid output/checkpoint mismatch/failed verification, investigate mechanically and resume Coordinator without the completion flag; implementation remains closed.
 
 ### 2. Coordinator -> Testing -> Coordinator
 
@@ -162,18 +164,32 @@ Every agent ends with exactly one `HERMES_RESULT={...}` line. Do not infer succe
 
 Treat malformed, contradictory, or role-incompatible specialist results as failures and return the evidence to Coordinator. Coordinator-result failures stop the workflow and are reported to the user. A successful background process spawn is not a result contract; only the completed `run_codex.py` process can produce a valid agent result.
 
+## Task Review Issue audit trail
+
+For issue-backed workflows, the completed Task Review result belongs on the canonical GitHub Issue, not on a future PR. Hermes publishes one Issue comment for each completed `TASK_REVIEW_CLEAN` or `CHANGES_REQUIRED` iteration before completing that specialist. Do not publish a separate Coordinator -> Task Review Issue comment; the completed review result is the useful audit artifact.
+
+Each Task Review Issue comment includes:
+
+- exact reviewed task;
+- `Task checkpoint: <checkpoint>`;
+- `Verdict: <TASK_REVIEW_CLEAN|CHANGES_REQUIRED>`;
+- `evidence_and_root_cause`;
+- `clearer_requirement`;
+- `acceptance_criteria`;
+- `simplest_approach`.
+
+The checkpoint and verdict lines are mechanically verified by `run_codex.py` during `--completed-agent task_review`. The remaining visible fields preserve the requirement-review history for humans without adding a separate task-version/history state model.
+
 ## PR handoff audit trail
 
-Hermes—not agents—publishes one new top-level PR comment for each verified handoff after a PR exists. Coordinator specialist handoffs are published before dispatch when the PR exists; pre-PR handoffs are backfilled after the draft PR is first opened.
+After implementation work begins and a PR exists, Hermes—not agents—publishes one new top-level PR comment for each verified implementation-stage handoff. Coordinator specialist handoffs are published before dispatch when the PR exists.
 
-Use the heading `### <From> -> <To> handoff`; include the relevant HEAD/checkpoint in the body so the transition is mechanically attributable.
+Use the heading `### <From> -> <To> handoff`; include the relevant HEAD in the body so the transition is mechanically attributable.
 
 Comments should be concise but sufficient to reconstruct the decision:
 
 | Transition | Include |
 |---|---|
-| Coordinator -> Task Review | task checkpoint, decision/reason, exact reviewed task, decisive evidence |
-| Task Review -> Coordinator | task checkpoint, verdict, four review outputs |
 | Coordinator -> Testing | HEAD, decision/reason, exact test task, decisive evidence |
 | Testing -> Coordinator | RED SHA, test command, coverage, RED verification |
 | Coordinator -> Review | GREEN/current SHA, decision, review scope, applicable targeted/full/CI evidence, relevant AC/RED evidence |
@@ -191,4 +207,4 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q run_codex.py tests/smoke_long_running_invocation.py
 ```
 
-For an end-to-end smoke test, use a small real issue and confirm: Coordinator loops through Task Review until clean before implementation; Task Review and Review sessions are fresh; Coordinator can loop through Testing/Review without user nudges; each verified handoff leaves an audit comment once a PR exists; every Codex invocation starts clean; Hermes-created commits are visible HEAD; code-clean Review can coexist with an unresolved external gate; and merge cannot proceed while Task Review, another required gate, or Draft state remains unresolved.
+For an end-to-end smoke test, use a small real issue and confirm: each completed Task Review iteration leaves one verified Issue comment before Coordinator can resume; Coordinator loops through Task Review until clean before implementation; Task Review and Review sessions are fresh; Coordinator can loop through Testing/Review without user nudges; implementation-stage verified handoffs leave PR comments once a PR exists; every Codex invocation starts clean; Hermes-created commits are visible HEAD; code-clean Review can coexist with an unresolved external gate; and merge cannot proceed while Task Review, another required gate, or Draft state remains unresolved.

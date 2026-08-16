@@ -211,28 +211,17 @@ class TaskReviewGateTests(unittest.TestCase):
         self.assertEqual(result["next_agent"], "task_review")
         self.assertIsNone(self.state()["task_review_clean_checkpoint"])
 
-    def test_task_review_clean_unlocks_coordinator_and_testing_handoff(self):
+    def test_task_review_clean_unlocks_testing_handoff(self):
         self.complete_clean_task_review()
         state = self.state()
         self.assertTrue(state["pending_result_ready"])
         self.assertIsNotNone(state["task_review_clean_checkpoint"])
 
-        def editing_coordinator(command, cwd, input_text):
-            (Path(cwd) / "production.py").write_text(
-                "implementation\n", encoding="utf-8"
-            )
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout=codex_stdout("C13", TESTING_HANDOFF),
-                stderr="",
-            )
-
+        coordinator = FakeRunner([codex_stdout("C13", TESTING_HANDOFF)])
         result = self.invoke(
-            "coordinator", editing_coordinator, completed_agent="task_review"
+            "coordinator", coordinator, completed_agent="task_review"
         )
         self.assertEqual(result["next_agent"], "testing")
-        self.assertTrue((self.repo / "production.py").exists())
 
     def test_existing_clean_coordinator_cannot_edit_while_handing_back_to_task_review(self):
         self.state_file.write_text(

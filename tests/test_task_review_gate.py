@@ -171,6 +171,29 @@ class TaskReviewGateTests(unittest.TestCase):
         self.assertIsNone(state["task_review_clean_checkpoint"])
         self.assertIsNotNone(state["pending_task_review_checkpoint"])
 
+    def test_task_review_handoff_invalidates_prior_code_review_certification(self):
+        head = self._git("rev-parse", "HEAD").stdout.strip()
+        self.state_file.write_text(
+            json.dumps(
+                {
+                    "workflow_id": "issue-13",
+                    "sessions": {},
+                    "pending_agent": None,
+                    "pending_result_ready": False,
+                    "review_clean_head": head,
+                    "pending_task_review_checkpoint": None,
+                    "task_review_clean_checkpoint": "old-clean",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        self.handoff_task_review()
+
+        state = self.state()
+        self.assertIsNone(state["task_review_clean_checkpoint"])
+        self.assertIsNone(state["review_clean_head"])
+
     def test_task_review_invocation_must_match_pending_checkpoint(self):
         self.handoff_task_review()
         runner = FakeRunner([codex_stdout("TR13", TASK_REVIEW_CLEAN)])

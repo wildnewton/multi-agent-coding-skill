@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from run_codex import (
     AgentRepositoryMutationError,
@@ -101,7 +102,7 @@ class TaskReviewGateTests(unittest.TestCase):
         )
 
     def invoke(self, agent, runner, task="do the task", *, completed_agent=None):
-        return invoke_agent(
+        kwargs = dict(
             agent=agent,
             workflow_id="issue-13",
             repo=self.repo,
@@ -111,6 +112,25 @@ class TaskReviewGateTests(unittest.TestCase):
             runner=runner,
             completed_agent=completed_agent,
         )
+        if completed_agent != "task_review":
+            return invoke_agent(**kwargs)
+
+        state = self.state()
+        checkpoint = state["pending_task_review_checkpoint"]
+        verdict = (
+            "TASK_REVIEW_CLEAN"
+            if state.get("task_review_clean_checkpoint") == checkpoint
+            else "CHANGES_REQUIRED"
+        )
+        comment = {
+            "issue_url": "https://api.github.com/repos/example/repo/issues/13",
+            "body": (
+                f"Task checkpoint: `{checkpoint}`\n"
+                f"Verdict: `{verdict}`\n"
+            ),
+        }
+        with patch("run_codex._fetch_issue_comment", return_value=comment):
+            return invoke_agent(**kwargs, task_review_comment_id=13)
 
     def state(self):
         return json.loads(self.state_file.read_text(encoding="utf-8"))

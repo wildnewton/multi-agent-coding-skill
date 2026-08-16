@@ -639,6 +639,7 @@ def invoke_agent(
         state["pending_result_ready"] = True
 
     if agent == "task_review" and status in {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED"}:
+        result["task_review_checkpoint"] = task_review_checkpoint
         state["pending_result_ready"] = True
         if status == "TASK_REVIEW_CLEAN":
             state["task_review_clean_checkpoint"] = task_review_checkpoint

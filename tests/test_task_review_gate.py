@@ -223,6 +223,26 @@ class TaskReviewGateTests(unittest.TestCase):
         )
         self.assertEqual(result["next_agent"], "testing")
 
+    def test_task_review_clean_unlocks_coordinator_edits(self):
+        self.complete_clean_task_review()
+
+        def editing_coordinator(command, cwd, input_text):
+            (Path(cwd) / "production.py").write_text(
+                "implementation\n", encoding="utf-8"
+            )
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=codex_stdout("C13", REVIEW_HANDOFF),
+                stderr="",
+            )
+
+        result = self.invoke(
+            "coordinator", editing_coordinator, completed_agent="task_review"
+        )
+        self.assertEqual(result["next_agent"], "review")
+        self.assertTrue((self.repo / "production.py").exists())
+
     def test_existing_clean_coordinator_cannot_edit_while_handing_back_to_task_review(self):
         self.state_file.write_text(
             json.dumps(
@@ -294,6 +314,35 @@ class TaskReviewGateTests(unittest.TestCase):
         self.assertEqual(first.calls[0][0], ["codex", "exec", "--json", "-"])
         self.assertEqual(second.calls[0][0], ["codex", "exec", "--json", "-"])
         self.assertNotIn("task_review", self.state()["sessions"])
+
+    def test_task_review_is_read_only(self):
+        self.handoff_task_review()
+
+        def editing_runner(command, cwd, input_text):
+            (Path(cwd) / "review-edit.txt").write_text("changed\n", encoding="utf-8")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=codex_stdout("TR13", TASK_REVIEW_CLEAN),
+                stderr="",
+            )
+
+        with self.assertRaises(AgentRepositoryMutationError):
+            self.invoke("task_review", editing_runner, task=TASK_REVIEW_TASK)
+        self.assertIsNone(self.state()["task_review_clean_checkpoint"])
+
+    def test_task_review_blocked_keeps_gate_closed(self):
+        self.handoff_task_review()
+        blocked = 'HERMES_RESULT={"status":"BLOCKED","summary":"Missing evidence"}'
+        runner = FakeRunner([codex_stdout("TR13", blocked)])
+
+        result = self.invoke("task_review", runner, task=TASK_REVIEW_TASK)
+
+        self.assertEqual(result["status"], "BLOCKED")
+        state = self.state()
+        self.assertEqual(state["pending_agent"], "task_review")
+        self.assertFalse(state["pending_result_ready"])
+        self.assertIsNone(state["task_review_clean_checkpoint"])
 
     def test_timeout_cannot_create_or_preserve_task_review_certification(self):
         self.handoff_task_review()

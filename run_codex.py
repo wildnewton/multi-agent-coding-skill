@@ -125,6 +125,7 @@ def _issue_number_from_workflow(workflow_id: str) -> int | None:
 
 def _fetch_issue_comment(repo: Path, comment_id: int) -> dict:
     env = os.environ.copy()
+    env.pop("GH_REPO", None)
     env["GH_PROMPT_DISABLED"] = "1"
     completed = subprocess.run(
         ["gh", "api", f"repos/{{owner}}/{{repo}}/issues/comments/{comment_id}"],

@@ -118,6 +118,91 @@ def _task_review_checkpoint(task: str) -> str:
     return hashlib.sha256(task.strip().encode("utf-8")).hexdigest()
 
 
+def _issue_number_from_workflow(workflow_id: str) -> int | None:
+    match = re.fullmatch(r"issue-(\d+)", workflow_id)
+    return int(match.group(1)) if match else None
+
+
+def _fetch_issue_comment(repo: Path, comment_id: int) -> dict:
+    env = os.environ.copy()
+    env["GH_PROMPT_DISABLED"] = "1"
+    completed = subprocess.run(
+        ["gh", "api", f"repos/{{owner}}/{{repo}}/issues/comments/{comment_id}"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "comment not found").strip()
+        raise InvalidAgentResult(
+            f"unable to verify Task Review audit comment {comment_id}: {detail}"
+        )
+    try:
+        comment = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise InvalidAgentResult(
+            "Task Review audit comment lookup did not return valid JSON"
+        ) from exc
+    if not isinstance(comment, dict):
+        raise InvalidAgentResult("Task Review audit comment lookup returned invalid data")
+    return comment
+
+
+def _verify_task_review_audit_comment(
+    *,
+    repo: Path,
+    workflow_id: str,
+    comment_id: int | None,
+    state: dict,
+) -> None:
+    issue_number = _issue_number_from_workflow(workflow_id)
+    if issue_number is None:
+        if comment_id is not None:
+            raise InvalidAgentResult(
+                "task_review_comment_id is only valid for issue-<number> workflows"
+            )
+        return
+
+    if comment_id is None:
+        raise InvalidAgentResult(
+            "issue-backed Task Review completion requires task_review_comment_id"
+        )
+
+    checkpoint = state.get("pending_task_review_checkpoint")
+    if not checkpoint:
+        raise InvalidAgentResult(
+            "Task Review completion requires a pending task-review checkpoint"
+        )
+
+    expected_verdict = (
+        "TASK_REVIEW_CLEAN"
+        if state.get("task_review_clean_checkpoint") == checkpoint
+        else "CHANGES_REQUIRED"
+    )
+    comment = _fetch_issue_comment(repo, comment_id)
+    issue_url = comment.get("issue_url")
+    body = comment.get("body")
+
+    if not isinstance(issue_url, str) or not issue_url.rstrip("/").endswith(
+        f"/issues/{issue_number}"
+    ):
+        raise InvalidAgentResult(
+            f"Task Review audit comment does not belong to issue #{issue_number}"
+        )
+    if not isinstance(body, str):
+        raise InvalidAgentResult("Task Review audit comment has no text body")
+    if f"Task checkpoint: `{checkpoint}`" not in body:
+        raise InvalidAgentResult(
+            "Task Review audit comment does not identify the current task checkpoint"
+        )
+    if f"Verdict: `{expected_verdict}`" not in body:
+        raise InvalidAgentResult(
+            f"Task Review audit comment does not identify verdict {expected_verdict}"
+        )
+
+
 def _git(repo: Path, *args: str, allow_failure: bool = False) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
@@ -309,6 +394,7 @@ def invoke_agent(
     runner: Callable | None = None,
     timeout_seconds: int = DEFAULT_AGENT_TIMEOUT_SECONDS,
     completed_agent: str | None = None,
+    task_review_comment_id: int | None = None,
 ) -> dict:
     if agent not in AGENTS:
         raise ValueError(f"unknown agent {agent!r}; expected one of {', '.join(AGENTS)}")
@@ -319,6 +405,10 @@ def invoke_agent(
     if completed_agent is not None and agent != "coordinator":
         raise InvalidAgentResult(
             "completed_agent may only be supplied when resuming Coordinator"
+        )
+    if task_review_comment_id is not None and completed_agent != "task_review":
+        raise InvalidAgentResult(
+            "task_review_comment_id may only be supplied when completing task_review"
         )
 
     repo = Path(repo).resolve()
@@ -344,6 +434,13 @@ def invoke_agent(
             raise InvalidAgentResult(
                 f"cannot complete {completed_agent!r}; the pending specialist "
                 "has not produced a completed role-valid result"
+            )
+        if completed_agent == "task_review":
+            _verify_task_review_audit_comment(
+                repo=repo,
+                workflow_id=workflow_id,
+                comment_id=task_review_comment_id,
+                state=state,
             )
         state["pending_agent"] = None
         state["pending_result_ready"] = False
@@ -586,6 +683,14 @@ def main(argv=None) -> int:
             "only after its existing mechanical acceptance has passed"
         ),
     )
+    parser.add_argument(
+        "--task-review-comment-id",
+        type=int,
+        help=(
+            "GitHub Issue comment ID proving the completed issue-backed Task Review "
+            "was published before Coordinator resumes"
+        ),
+    )
     args = parser.parse_args(argv)
 
     root = Path(__file__).resolve().parent
@@ -605,6 +710,7 @@ def main(argv=None) -> int:
             prompt_dir=prompt_dir,
             timeout_seconds=args.timeout_seconds,
             completed_agent=args.completed_agent,
+            task_review_comment_id=args.task_review_comment_id,
         )
         if result.get("status") == "AWAIT_USER_MERGE":
             reviewed_head = result["reviewed_head"].strip()

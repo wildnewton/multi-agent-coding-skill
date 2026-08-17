@@ -15,6 +15,7 @@ Use this skill when the user asks Hermes to implement a code change with the mul
 
 ## Roles
 
+- **User:** owns product/domain decisions and destructive authorization, including final merge approval.
 - **Coordinator:** owns the canonical task, requirement/scope, implementation/GREEN, finding triage, semantic routing, and merge-readiness judgment.
 - **Task Review:** independently validates the task contract before implementation begins.
 - **Testing:** owns RED intent and test quality after Task Review is clean.
@@ -117,7 +118,7 @@ On `CHANGES_REQUIRED`, Coordinator chooses the smallest justified correction: di
 
 ### 4. User decision
 
-`AWAIT_USER_DECISION` must include a specific non-empty `question`. Hermes asks the user and passes the exact answer back on the next Coordinator step. Ordinary user answers are not automatically written to GitHub.
+`AWAIT_USER_DECISION` must include a specific non-empty `question`. Hermes asks the user and passes the exact answer back on the next Coordinator step. The Executor persists that answer as `User -> Coordinator` before invoking Coordinator, so a retry reuses the exact accepted answer. Ordinary user answers are not automatically written to GitHub.
 
 ### 5. Merge gate
 
@@ -129,7 +130,7 @@ Merge readiness requires at minimum:
 - no unresolved specialist ownership;
 - current HEAD matches clean Review certification;
 - current PR description matches the Review-certified description;
-- actual GitHub PR HEAD matches `reviewed_head`;
+- actual GitHub PR HEAD matches `reviewed_head` before the merge-approval handoff is created;
 - required tests/CI/external gates are satisfied;
 - explicit user approval before merge.
 

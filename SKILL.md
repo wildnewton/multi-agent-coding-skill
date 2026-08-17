@@ -70,7 +70,7 @@ Every formal agent-to-agent transition follows the same three steps:
 
 This cycle uses the existing single `pending`; do not add a phase flag, bridge-complete flag, handoff ID, or second pending object.
 
-After Task Review is clean, do **not** create an empty commit merely to open a PR. As soon as the first real implementation-stage commit exists—normally RED, otherwise GREEN—Hermes pushes it and opens the Draft PR before the next agent dispatch. This keeps Task Review history on the Issue and subsequent implementation history on the PR without backfilling.
+After Task Review is clean, do **not** create an empty commit merely to open a PR. As soon as the first real implementation-stage commit exists—normally RED, otherwise GREEN—Hermes pushes it and opens the Draft PR before the next agent dispatch. Therefore Task Review history remains on the Issue; the first `Coordinator -> Testing` dispatch may still be on the Issue when no implementation commit exists yet, while `Testing -> Coordinator` and subsequent implementation-stage traces go to the PR. Do not backfill that first dispatch.
 
 ## Workflow
 

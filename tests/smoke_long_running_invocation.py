@@ -20,14 +20,12 @@ def now() -> str:
 
 
 def git(repo: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", *args], cwd=repo, check=True, text=True, capture_output=True
-    )
+    subprocess.run(["git", *args], cwd=repo, check=True, text=True, capture_output=True)
 
 
 def write_fake_codex(path: Path, sleep_seconds: float) -> None:
     path.write_text(
-        f"""#!/usr/bin/env python3
+        f'''#!/usr/bin/env python3
 import json
 import time
 
@@ -40,7 +38,7 @@ print(json.dumps({{
         "text":'HERMES_RESULT={{"status":"RED_COMPLETE","test_command":"python -m unittest"}}'
     }}
 }}))
-""",
+''',
         encoding="utf-8",
     )
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -53,9 +51,7 @@ def main(argv=None) -> int:
     parser.add_argument("--timeout-seconds", type=int, default=1800)
     args = parser.parse_args(argv)
     if not args.require_survive_seconds < args.sleep_seconds < args.timeout_seconds:
-        parser.error(
-            "require-survive-seconds < sleep-seconds < timeout-seconds is required"
-        )
+        parser.error("require-survive-seconds < sleep-seconds < timeout-seconds is required")
 
     skill_root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="long-running-invocation-smoke-") as temp:
@@ -69,6 +65,30 @@ def main(argv=None) -> int:
         git(repo, "add", "README.md")
         git(repo, "commit", "-m", "initial")
 
+        task = "Prove this invocation survives the configured survival boundary."
+        state_file = root / "state.json"
+        state_file.write_text(
+            json.dumps(
+                {
+                    "workflow_id": "long-running-invocation-smoke",
+                    "sessions": {},
+                    "pending": {
+                        "from": "coordinator",
+                        "to": "testing",
+                        "payload": {
+                            "status": "HANDOFF",
+                            "next_agent": "testing",
+                            "task": task,
+                            "reason": "Smoke harness is exercising a pending Testing invocation.",
+                        },
+                    },
+                    "review_certification": None,
+                    "task_review_clean_checkpoint": "smoke-approved",
+                }
+            ),
+            encoding="utf-8",
+        )
+
         bin_dir = root / "bin"
         bin_dir.mkdir()
         write_fake_codex(bin_dir / "codex", args.sleep_seconds)
@@ -81,8 +101,8 @@ def main(argv=None) -> int:
             "--agent", "testing",
             "--workflow", "long-running-invocation-smoke",
             "--repo", str(repo),
-            "--task", "Prove this invocation survives the configured survival boundary.",
-            "--state-file", str(root / "state.json"),
+            "--task", task,
+            "--state-file", str(state_file),
             "--prompt-dir", str(skill_root / "prompts"),
             "--timeout-seconds", str(args.timeout_seconds),
         ]

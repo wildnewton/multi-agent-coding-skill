@@ -183,6 +183,22 @@ def _current_pr_number(repo: Path) -> int | None:
         return None
 
 
+def _current_pr_is_draft(repo: Path) -> bool:
+    completed = subprocess.run(
+        ["gh", "pr", "view", "--json", "isDraft", "--jq", ".isDraft"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_gh_env(),
+    )
+    value = completed.stdout.strip().lower()
+    if completed.returncode != 0 or value not in {"true", "false"}:
+        detail = (completed.stderr or completed.stdout or "no PR draft state returned").strip()
+        raise InvalidAgentResult(f"unable to verify actual GitHub PR draft state: {detail}")
+    return value == "true"
+
+
 def _current_pr_body_hash(repo: Path) -> str | None:
     if not _has_origin(repo):
         return None
@@ -427,6 +443,21 @@ def _pending_payload_task(pending: dict) -> str:
     return task
 
 
+def _verify_dispatch_bridge(repo: Path, pending: dict, local_head: str) -> None:
+    if not _has_origin(repo) or "task_review" in {pending.get("from"), pending.get("to")}:
+        return
+    pr_number = _current_pr_number(repo)
+    requires_pr = pending.get("from") in {"testing", "review"} or pending.get("to") == "review"
+    if requires_pr and pr_number is None:
+        raise InvalidAgentResult(
+            "implementation-stage dispatch requires a Draft PR after the first real implementation commit"
+        )
+    if pr_number is not None and _current_pr_head(repo) != local_head:
+        raise InvalidAgentResult(
+            "implementation-stage dispatch requires actual PR HEAD to match local HEAD"
+        )
+
+
 def _verify_red_command(repo: Path, test_command: str, timeout_seconds: int) -> None:
     before_guard = _capture_repository_guard(repo)
     before_status = _worktree_status(repo)
@@ -549,15 +580,12 @@ def invoke_agent(
         and pending.get("from") != "user"
     )
     if formal_pending_dispatch:
+        _verify_dispatch_bridge(repo, pending, repository_guard["head"])
         trace_checkpoint = None
         if pending.get("to") == "task_review":
             trace_checkpoint = task_review_checkpoint
-        elif (
-            pending.get("from") == "task_review"
-            and isinstance(pending.get("payload"), dict)
-            and pending["payload"].get("status") == "TASK_REVIEW_CLEAN"
-        ):
-            trace_checkpoint = state.get("task_review_clean_checkpoint")
+        elif pending.get("from") == "task_review" and isinstance(pending.get("payload"), dict):
+            trace_checkpoint = pending["payload"].get("task_review_checkpoint")
         _publish_handoff_trace(
             repo,
             workflow_id,
@@ -728,6 +756,16 @@ def invoke_agent(
                 if current_pr_head != reviewed_head:
                     _release_consumed_handoff(state_file, state, consumed_result_handoff)
                     raise MergePrHeadMismatch(reviewed_head, current_pr_head)
+                try:
+                    current_pr_is_draft = _current_pr_is_draft(repo)
+                except InvalidAgentResult:
+                    _release_consumed_handoff(state_file, state, consumed_result_handoff)
+                    raise
+                if current_pr_is_draft:
+                    _release_consumed_handoff(state_file, state, consumed_result_handoff)
+                    raise InvalidAgentResult(
+                        "Coordinator AWAIT_USER_MERGE requires the actual GitHub PR to be ready for review"
+                    )
                 state["pending"] = {"from": "coordinator", "to": "user", "payload": result}
                 _publish_handoff_trace(
                     repo, workflow_id, state["pending"], head=repository_guard["head"]
@@ -757,6 +795,7 @@ def invoke_agent(
             )
     elif agent == "task_review":
         if status in {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED"}:
+            result["task_review_checkpoint"] = task_review_checkpoint
             state["pending"] = _reverse_handoff(agent, result)
             if status == "TASK_REVIEW_CLEAN":
                 state["task_review_clean_checkpoint"] = task_review_checkpoint

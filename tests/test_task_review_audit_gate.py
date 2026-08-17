@@ -103,18 +103,29 @@ class TaskReviewAuditGateTests(unittest.TestCase):
         with patch("run_codex._publish_handoff_trace") as publish:
             self.invoke("coordinator", {"status": "BLOCKED", "summary": "done"})
         handoff = publish.call_args.args[2]
+        checkpoint = publish.call_args.kwargs["task_checkpoint"]
         self.assertEqual(handoff["from"], "task_review")
         self.assertEqual(handoff["to"], "coordinator")
-        self.assertEqual(handoff["payload"], CLEAN_RESULT)
-        self.assertTrue(publish.call_args.kwargs["task_checkpoint"])
+        self.assertEqual(
+            {key: value for key, value in handoff["payload"].items() if key != "task_review_checkpoint"},
+            CLEAN_RESULT,
+        )
+        self.assertTrue(checkpoint)
+        self.assertEqual(handoff["payload"]["task_review_checkpoint"], checkpoint)
 
-    def test_changes_required_is_traced_when_coordinator_is_dispatched(self):
+    def test_changes_required_trace_carries_same_reviewed_checkpoint(self):
         self.prime_task_review()
         self.invoke("task_review", CHANGES_RESULT)
         with patch("run_codex._publish_handoff_trace") as publish:
             self.invoke("coordinator", {"status": "BLOCKED", "summary": "done"})
-        self.assertEqual(publish.call_args.args[2]["payload"], CHANGES_RESULT)
-        self.assertIsNone(publish.call_args.kwargs["task_checkpoint"])
+        handoff = publish.call_args.args[2]
+        checkpoint = publish.call_args.kwargs["task_checkpoint"]
+        self.assertEqual(
+            {key: value for key, value in handoff["payload"].items() if key != "task_review_checkpoint"},
+            CHANGES_RESULT,
+        )
+        self.assertTrue(checkpoint)
+        self.assertEqual(handoff["payload"]["task_review_checkpoint"], checkpoint)
 
     def test_reverse_handoff_remains_accepted_when_dispatch_trace_fails(self):
         self.prime_task_review()

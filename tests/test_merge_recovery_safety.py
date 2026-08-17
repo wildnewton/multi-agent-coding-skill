@@ -144,6 +144,34 @@ class MergeRecoverySafetyTests(unittest.TestCase):
 
         self.assertEqual(self.state()["pending"], pending)
 
+    def test_draft_pr_cannot_become_user_merge_pending(self):
+        self.write_state(
+            {
+                "from": "review",
+                "to": "coordinator",
+                "payload": {"status": "REVIEW_CLEAN"},
+            }
+        )
+        merge_result = (
+            'HERMES_RESULT={"status":"AWAIT_USER_MERGE",'
+            f'"reviewed_head":"{self.head}","draft":false}}'
+        )
+        with (
+            patch("run_codex._current_pr_body_hash", return_value="body-v1"),
+            patch("run_codex._current_pr_head", return_value=self.head),
+            patch("run_codex._current_pr_is_draft", return_value=True),
+            patch("run_codex._publish_handoff_trace") as publish,
+        ):
+            with self.assertRaisesRegex(InvalidAgentResult, "actual GitHub PR to be ready"):
+                self.invoke(FakeRunner(merge_result), task="ask for merge")
+
+        self.assertIsNone(self.state()["pending"])
+        publish.assert_called_once()
+        self.assertEqual(
+            (publish.call_args.args[2]["from"], publish.call_args.args[2]["to"]),
+            ("review", "coordinator"),
+        )
+
     def test_clean_merge_readiness_still_uses_existing_certification_checks(self):
         self.write_state(None)
         merge_result = (
@@ -153,6 +181,7 @@ class MergeRecoverySafetyTests(unittest.TestCase):
         with (
             patch("run_codex._current_pr_body_hash", return_value="body-v1"),
             patch("run_codex._current_pr_head", return_value=self.head),
+            patch("run_codex._current_pr_is_draft", return_value=False),
             patch("run_codex._publish_handoff_trace"),
         ):
             result = self.invoke(FakeRunner(merge_result), task="ask for merge")

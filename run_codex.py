@@ -166,21 +166,45 @@ def _has_origin(repo: Path) -> bool:
 def _current_pr_number(repo: Path) -> int | None:
     if not _has_origin(repo):
         return None
+    branch = _git(repo, "branch", "--show-current").stdout.strip()
+    if not branch:
+        raise InvalidAgentResult("unable to determine current branch for PR lookup")
     completed = subprocess.run(
-        ["gh", "pr", "view", "--json", "number", "--jq", ".number"],
+        [
+            "gh",
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--state",
+            "open",
+            "--json",
+            "number",
+            "--limit",
+            "1",
+        ],
         cwd=repo,
         text=True,
         capture_output=True,
         check=False,
         env=_gh_env(),
     )
-    value = completed.stdout.strip()
-    if completed.returncode != 0 or not value:
-        return None
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "PR lookup failed").strip()
+        raise InvalidAgentResult(f"unable to determine current GitHub PR: {detail}")
     try:
-        return int(value)
-    except ValueError:
+        rows = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise InvalidAgentResult("current GitHub PR lookup returned invalid JSON") from exc
+    if not isinstance(rows, list):
+        raise InvalidAgentResult("current GitHub PR lookup returned invalid data")
+    if not rows:
         return None
+    first = rows[0]
+    number = first.get("number") if isinstance(first, dict) else None
+    if not isinstance(number, int):
+        raise InvalidAgentResult("current GitHub PR lookup returned an invalid PR number")
+    return number
 
 
 def _current_pr_is_draft(repo: Path) -> bool:
@@ -552,6 +576,7 @@ def invoke_agent(
     effective_task = task
     consumed_result_handoff = False
     task_review_checkpoint = None
+    review_pr_body_hash = None
 
     if agent in specialists:
         if not isinstance(pending, dict) or pending.get("to") != agent:
@@ -581,6 +606,8 @@ def invoke_agent(
     )
     if formal_pending_dispatch:
         _verify_dispatch_bridge(repo, pending, repository_guard["head"])
+        if agent == "review":
+            review_pr_body_hash = _current_pr_body_hash(repo)
         trace_checkpoint = None
         if pending.get("to") == "task_review":
             trace_checkpoint = task_review_checkpoint
@@ -807,10 +834,13 @@ def invoke_agent(
             )
     elif agent == "review":
         if status in {"REVIEW_CLEAN", "CHANGES_REQUIRED"}:
-            state["pending"] = _reverse_handoff(agent, result)
             if status == "REVIEW_CLEAN":
                 try:
-                    pr_body_hash = _current_pr_body_hash(repo)
+                    current_pr_body_hash = _current_pr_body_hash(repo)
+                    if current_pr_body_hash != review_pr_body_hash:
+                        raise InvalidAgentResult(
+                            "PR description changed during Review; fresh Review is required"
+                        )
                 except InvalidAgentResult as exc:
                     _publish_specialist_failure_trace(
                         repo,
@@ -822,8 +852,9 @@ def invoke_agent(
                     raise
                 state["review_certification"] = {
                     "head": repository_guard["head"],
-                    "pr_body_hash": pr_body_hash,
+                    "pr_body_hash": review_pr_body_hash,
                 }
+            state["pending"] = _reverse_handoff(agent, result)
         elif status == "BLOCKED":
             summary = result.get("summary")
             reason = f"BLOCKED: {summary.strip()}" if isinstance(summary, str) and summary.strip() else "BLOCKED"

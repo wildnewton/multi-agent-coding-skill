@@ -62,4 +62,4 @@ If the work cannot be completed safely:
 
 `HERMES_RESULT={"status":"BLOCKED","summary":"<reason>"}`
 
-The Executor re-runs the reported `test_command` mechanically before consuming the Testing handoff and returns the exact accepted result to Coordinator. Coordinator decides whether the RED evidence is semantically sufficient and what happens next.
+The Executor re-runs the reported `test_command` with a timeout and repository-mutation guard before accepting your result as `Testing -> Coordinator`. Hermes may then commit/push the accepted RED edits and open/update the Draft PR before the Executor dispatches Coordinator from that exact pending result. Coordinator decides whether the RED evidence is semantically sufficient and what happens next.

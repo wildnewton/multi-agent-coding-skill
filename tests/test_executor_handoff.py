@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from run_codex import CodexInvocationError, MergePrHeadMismatch, invoke_agent
+from run_codex import CodexInvocationError, InvalidAgentResult, MergePrHeadMismatch, invoke_agent
 
 
 TESTING_TASK = "Add focused RED coverage for issue 21"
@@ -136,12 +136,53 @@ class ExecutorHandoffTests(unittest.TestCase):
         self._git("commit", "--allow-empty", "-m", "Hermes bridge commit")
         bridged_head = self._git("rev-parse", "HEAD").stdout.strip()
         testing = FakeRunner([codex_stdout("T21", TESTING_RESULT)])
-        with patch("run_codex._publish_handoff_trace") as publish:
+        with (
+            patch("run_codex._has_origin", return_value=True),
+            patch("run_codex._current_pr_number", return_value=22),
+            patch("run_codex._current_pr_head", return_value=bridged_head),
+            patch("run_codex._publish_handoff_trace") as publish,
+        ):
             self.invoke("testing", testing)
         self.assertEqual(publish.call_count, 1)
         self.assertEqual(publish.call_args.args[2]["from"], "coordinator")
         self.assertEqual(publish.call_args.args[2]["to"], "testing")
         self.assertEqual(publish.call_args.kwargs["head"], bridged_head)
+
+    def test_dispatch_rejects_pr_head_behind_local_head(self):
+        self.handoff_testing()
+        original = self.state()["pending"]
+        self._git("commit", "--allow-empty", "-m", "unpublished bridge commit")
+        testing = FakeRunner([codex_stdout("T21", TESTING_RESULT)])
+        with (
+            patch("run_codex._has_origin", return_value=True),
+            patch("run_codex._current_pr_number", return_value=22),
+            patch("run_codex._current_pr_head", return_value="stale-pr-head"),
+            patch("run_codex._publish_handoff_trace") as publish,
+        ):
+            with self.assertRaisesRegex(InvalidAgentResult, "actual PR HEAD to match local HEAD"):
+                self.invoke("testing", testing)
+        self.assertEqual(testing.calls, [])
+        publish.assert_not_called()
+        self.assertEqual(self.state()["pending"], original)
+
+    def test_red_result_cannot_dispatch_coordinator_before_draft_pr_exists(self):
+        self.handoff_testing()
+        testing = FakeRunner([codex_stdout("T21", TESTING_RESULT)])
+        self.invoke("testing", testing)
+        accepted = self.state()["pending"]
+        coordinator = FakeRunner(
+            [codex_stdout("C21", 'HERMES_RESULT={"status":"BLOCKED","summary":"done"}')]
+        )
+        with (
+            patch("run_codex._has_origin", return_value=True),
+            patch("run_codex._current_pr_number", return_value=None),
+            patch("run_codex._publish_handoff_trace") as publish,
+        ):
+            with self.assertRaisesRegex(InvalidAgentResult, "requires a Draft PR"):
+                self.invoke("coordinator", coordinator)
+        self.assertEqual(coordinator.calls, [])
+        publish.assert_not_called()
+        self.assertEqual(self.state()["pending"], accepted)
 
     def test_specialist_invocation_uses_exact_pending_task(self):
         self.handoff_testing()
@@ -221,6 +262,10 @@ class ExecutorHandoffTests(unittest.TestCase):
         self.assertIsNotNone(state["task_review_clean_checkpoint"])
         self.assertEqual(state["pending"]["from"], "task_review")
         self.assertEqual(state["pending"]["to"], "coordinator")
+        self.assertEqual(
+            state["pending"]["payload"]["task_review_checkpoint"],
+            state["task_review_clean_checkpoint"],
+        )
 
     def test_user_answer_is_persisted_before_coordinator_runs_and_survives_retry(self):
         decision = (

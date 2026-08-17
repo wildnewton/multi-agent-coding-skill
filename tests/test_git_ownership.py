@@ -94,6 +94,7 @@ class GitOwnershipContractTests(unittest.TestCase):
             patch("run_codex._publish_specialist_failure_trace"),
             patch("run_codex._current_pr_body_hash", return_value=None),
             patch("run_codex._current_pr_head", return_value=current_head),
+            patch("run_codex._current_pr_is_draft", return_value=False),
         ):
             return invoke_agent(
                 agent=agent,

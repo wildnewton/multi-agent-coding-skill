@@ -114,7 +114,8 @@ class StateAndMergeRecoveryTests(unittest.TestCase):
 
             recovery = FakeRunner(
                 'HERMES_RESULT={"status":"HANDOFF","next_agent":"review",'
-                '"task":"Review the corrected PR description","reason":"PR body changed"}'
+                '"task":"Review the corrected PR description","reason":"PR body changed",'
+                '"full_test_unavailable_reason":"No executable change since the prior Review"}'
             )
             invoke_agent(
                 agent="coordinator",

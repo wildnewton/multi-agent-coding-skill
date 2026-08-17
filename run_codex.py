@@ -15,26 +15,10 @@ from typing import Callable, Iterable
 
 
 AGENTS = {
-    "testing": {
-        "prompt": "testing.md",
-        "persistent": True,
-        "statuses": {"RED_COMPLETE", "BLOCKED"},
-    },
-    "coordinator": {
-        "prompt": "coordinator.md",
-        "persistent": True,
-        "statuses": {"HANDOFF", "AWAIT_USER_DECISION", "AWAIT_USER_MERGE", "BLOCKED"},
-    },
-    "task_review": {
-        "prompt": "task_review.md",
-        "persistent": False,
-        "statuses": {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED", "BLOCKED"},
-    },
-    "review": {
-        "prompt": "review.md",
-        "persistent": False,
-        "statuses": {"REVIEW_CLEAN", "CHANGES_REQUIRED", "BLOCKED"},
-    },
+    "testing": {"prompt": "testing.md", "persistent": True, "statuses": {"RED_COMPLETE", "BLOCKED"}},
+    "coordinator": {"prompt": "coordinator.md", "persistent": True, "statuses": {"HANDOFF", "AWAIT_USER_DECISION", "AWAIT_USER_MERGE", "BLOCKED"}},
+    "task_review": {"prompt": "task_review.md", "persistent": False, "statuses": {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED", "BLOCKED"}},
+    "review": {"prompt": "review.md", "persistent": False, "statuses": {"REVIEW_CLEAN", "CHANGES_REQUIRED", "BLOCKED"}},
 }
 
 RESULT_MARKER = "HERMES_RESULT="
@@ -94,8 +78,7 @@ def _load_state(path: Path, workflow_id: str) -> dict:
     state = json.loads(path.read_text(encoding="utf-8"))
     if state.get("workflow_id") not in (None, workflow_id):
         raise ValueError(
-            f"state file belongs to workflow {state.get('workflow_id')!r}, "
-            f"not {workflow_id!r}"
+            f"state file belongs to workflow {state.get('workflow_id')!r}, not {workflow_id!r}"
         )
     state.setdefault("workflow_id", workflow_id)
     state.setdefault("sessions", {})
@@ -136,12 +119,7 @@ def _git(repo: Path, *args: str, allow_failure: bool = False) -> subprocess.Comp
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
     completed = subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=False,
-        env=env,
+        ["git", *args], cwd=repo, text=True, capture_output=True, check=False, env=env
     )
     if completed.returncode != 0 and not allow_failure:
         detail = (completed.stderr or completed.stdout or "").strip()
@@ -171,7 +149,9 @@ def _current_pr_head(repo: Path) -> str:
 
 def _has_origin(repo: Path) -> bool:
     origin = _git(repo, "remote", "get-url", "origin", allow_failure=True)
-    return origin.returncode == 0 and bool(origin.stdout.strip())
+    if origin.returncode != 0:
+        return False
+    return "github.com" in origin.stdout.strip().lower()
 
 
 def _current_pr_number(repo: Path) -> int | None:
@@ -257,10 +237,11 @@ def _publish_handoff_trace(
     body = "\n".join(lines)
     env = os.environ.copy()
     env["GH_PROMPT_DISABLED"] = "1"
-    if pr_number is not None:
-        command = ["gh", "pr", "comment", str(pr_number), "--body", body]
-    else:
-        command = ["gh", "issue", "comment", str(issue_number), "--body", body]
+    command = (
+        ["gh", "pr", "comment", str(pr_number), "--body", body]
+        if pr_number is not None
+        else ["gh", "issue", "comment", str(issue_number), "--body", body]
+    )
     completed = subprocess.run(
         command, cwd=repo, text=True, capture_output=True, check=False, env=env
     )
@@ -317,8 +298,7 @@ def _worktree_status(repo: Path) -> list[str]:
 def _ensure_clean_worktree(repo: Path) -> None:
     if _worktree_status(repo):
         raise DirtyWorktreeError(
-            "agent invocation requires a clean worktree; the orchestration layer must commit or "
-            "discard the previous agent's changes first"
+            "agent invocation requires a clean worktree; the orchestration layer must commit or discard the previous agent's changes first"
         )
 
 
@@ -335,14 +315,7 @@ def _remote_branch_head(repo: Path, branch: str) -> tuple[bool, str | None]:
     origin = _git(repo, "remote", "get-url", "origin", allow_failure=True)
     if origin.returncode != 0 or not origin.stdout.strip() or not branch:
         return False, None
-
-    remote = _git(
-        repo,
-        "ls-remote",
-        "--heads",
-        "origin",
-        f"refs/heads/{branch}",
-    )
+    remote = _git(repo, "ls-remote", "--heads", "origin", f"refs/heads/{branch}")
     line = remote.stdout.strip()
     return True, line.split()[0] if line else None
 
@@ -363,11 +336,7 @@ def _capture_repository_guard(repo: Path) -> dict:
 
 def _verify_agent_did_not_mutate_repository(repo: Path, before: dict) -> None:
     after = _capture_repository_guard(repo)
-    if (
-        after["head"] != before["head"]
-        or after["branch"] != before["branch"]
-        or after["staged"]
-    ):
+    if after["head"] != before["head"] or after["branch"] != before["branch"] or after["staged"]:
         raise AgentRepositoryMutationError(
             "local git state changed during agent invocation; agents may not mutate git state"
         )
@@ -391,7 +360,6 @@ def _iter_strings(value) -> Iterable[str]:
 def _parse_output(stdout: str) -> tuple[str | None, dict]:
     thread_id = None
     candidate_strings = []
-
     for raw_line in stdout.splitlines():
         line = raw_line.strip()
         if not line:
@@ -401,7 +369,6 @@ def _parse_output(stdout: str) -> tuple[str | None, dict]:
         except json.JSONDecodeError:
             candidate_strings.append(line)
             continue
-
         if event.get("type") == "thread.started" and event.get("thread_id"):
             thread_id = event["thread_id"]
         candidate_strings.extend(_iter_strings(event))
@@ -419,7 +386,6 @@ def _parse_output(stdout: str) -> tuple[str | None, dict]:
         if not isinstance(result, dict) or not result.get("status"):
             raise InvalidAgentResult("HERMES_RESULT must be a JSON object with status")
         return thread_id, result
-
     raise InvalidAgentResult("Codex output did not contain HERMES_RESULT")
 
 
@@ -434,8 +400,7 @@ def _build_prompt(role_text: str, workflow_id: str, task: str, include_role: boo
             "Current task:",
             task.strip(),
             "",
-            "Finish your final response with exactly one machine-readable line starting "
-            "with HERMES_RESULT= followed by a JSON object containing at least a status field.",
+            "Finish your final response with exactly one machine-readable line starting with HERMES_RESULT= followed by a JSON object containing at least a status field.",
         ]
     )
     return "\n\n".join(parts).strip() + "\n"
@@ -458,6 +423,21 @@ def _pending_payload_task(pending: dict) -> str:
     if not isinstance(task, str) or not task.strip():
         raise InvalidAgentResult("pending specialist handoff must include non-empty task")
     return task
+
+
+def _verify_red_command(repo: Path, test_command: str) -> None:
+    completed = subprocess.run(
+        test_command,
+        cwd=repo,
+        shell=True,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode == 0:
+        raise InvalidAgentResult(
+            "Testing RED_COMPLETE test_command must still fail before GREEN"
+        )
 
 
 def _reverse_handoff(agent: str, result: dict) -> dict:
@@ -488,8 +468,7 @@ def invoke_agent(
     state_file = Path(state_file)
     prompt_dir = Path(prompt_dir)
     config = AGENTS[agent]
-    role_path = prompt_dir / config["prompt"]
-    role_text = role_path.read_text(encoding="utf-8")
+    role_text = (prompt_dir / config["prompt"]).read_text(encoding="utf-8")
     state = _load_state(state_file, workflow_id)
     pending = state.get("pending")
     specialists = {"testing", "task_review", "review"}
@@ -516,9 +495,7 @@ def invoke_agent(
                 f"cannot invoke {agent!r}; pending handoff is not from coordinator"
             )
         task_from_handoff = _pending_payload_task(pending)
-        effective_task = json.dumps(
-            pending["payload"], ensure_ascii=False, sort_keys=True
-        )
+        effective_task = json.dumps(pending["payload"], ensure_ascii=False, sort_keys=True)
         if agent == "task_review":
             task_review_checkpoint = _task_review_checkpoint(task_from_handoff)
     elif agent == "coordinator" and isinstance(pending, dict) and pending.get("to") == "coordinator":
@@ -537,9 +514,7 @@ def invoke_agent(
         )
         consumed_result_handoff = True
 
-    pre_task_review_coordinator = (
-        agent == "coordinator" and not state.get("task_review_clean_checkpoint")
-    )
+    pre_task_review_coordinator = agent == "coordinator" and not state.get("task_review_clean_checkpoint")
     read_only_context = None
     if agent == "task_review":
         read_only_context = "Task Review"
@@ -551,11 +526,11 @@ def invoke_agent(
         read_only_context = "Coordinator before clean Task Review"
 
     session_id = state["sessions"].get(agent) if config["persistent"] else None
-    if session_id:
-        command = ["codex", "exec", "resume", session_id, "--json", "-"]
-    else:
-        command = ["codex", "exec", "--json", "-"]
-
+    command = (
+        ["codex", "exec", "resume", session_id, "--json", "-"]
+        if session_id
+        else ["codex", "exec", "--json", "-"]
+    )
     prompt = _build_prompt(
         role_text=role_text,
         workflow_id=workflow_id,
@@ -563,15 +538,11 @@ def invoke_agent(
         include_role=session_id is None,
     )
     try:
-        if runner is None:
-            completed = _default_runner(
-                command,
-                repo,
-                prompt,
-                timeout_seconds=timeout_seconds,
-            )
-        else:
-            completed = runner(command, repo, prompt)
+        completed = (
+            _default_runner(command, repo, prompt, timeout_seconds=timeout_seconds)
+            if runner is None
+            else runner(command, repo, prompt)
+        )
     except subprocess.TimeoutExpired as exc:
         _verify_agent_did_not_mutate_repository(repo, repository_guard)
         if read_only_context is not None:
@@ -584,9 +555,7 @@ def invoke_agent(
                 head=repository_guard["head"],
                 reason=f"Codex timed out after {timeout_seconds} seconds",
             )
-        raise CodexInvocationError(
-            f"Codex timed out after {timeout_seconds} seconds"
-        ) from exc
+        raise CodexInvocationError(f"Codex timed out after {timeout_seconds} seconds") from exc
 
     _verify_agent_did_not_mutate_repository(repo, repository_guard)
     if read_only_context is not None:
@@ -601,26 +570,20 @@ def invoke_agent(
                 head=repository_guard["head"],
                 reason=f"Codex exited with status {completed.returncode}: {detail}",
             )
-        raise CodexInvocationError(
-            f"Codex exited with status {completed.returncode}: {detail}"
-        )
+        raise CodexInvocationError(f"Codex exited with status {completed.returncode}: {detail}")
 
     thread_id, result = _parse_output(completed.stdout)
     status = result["status"]
     if status not in config["statuses"]:
         raise InvalidAgentResult(f"status {status!r} is invalid for agent {agent!r}")
-
     if "commit" in result:
         raise InvalidAgentResult(
             "agents must not include commit; the orchestration layer owns git commit creation"
         )
-
     if agent in specialists and "next_agent" in result:
         raise InvalidAgentResult(f"agent {agent!r} is not allowed to choose next_agent")
-
     if agent == "testing" and status == "RED_COMPLETE":
         _require_nonempty_text(result, "test_command", "Testing RED_COMPLETE")
-
     if agent == "task_review" and status in {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED"}:
         for field in TASK_REVIEW_FIELDS:
             _require_nonempty_text(result, field, f"Task Review {status}")
@@ -646,26 +609,15 @@ def invoke_agent(
 
             if next_agent == "review":
                 has_full_command = _has_nonempty_text(result, "full_test_command")
-                has_unavailable_reason = _has_nonempty_text(
-                    result, "full_test_unavailable_reason"
-                )
+                has_unavailable_reason = _has_nonempty_text(result, "full_test_unavailable_reason")
                 if has_full_command == has_unavailable_reason:
                     raise InvalidAgentResult(
-                        "Coordinator review HANDOFF must include exactly one of "
-                        "full_test_command or full_test_unavailable_reason"
+                        "Coordinator review HANDOFF must include exactly one of full_test_command or full_test_unavailable_reason"
                     )
                 state["review_certification"] = None
 
-            state["pending"] = {
-                "from": "coordinator",
-                "to": next_agent,
-                "payload": result,
-            }
-            checkpoint = (
-                _task_review_checkpoint(result["task"])
-                if next_agent == "task_review"
-                else None
-            )
+            state["pending"] = {"from": "coordinator", "to": next_agent, "payload": result}
+            checkpoint = _task_review_checkpoint(result["task"]) if next_agent == "task_review" else None
             _publish_handoff_trace(
                 repo,
                 workflow_id,
@@ -679,27 +631,15 @@ def invoke_agent(
                     f"Coordinator status {status!r} must not include next_agent"
                 )
             if status == "AWAIT_USER_DECISION":
-                _require_nonempty_text(
-                    result, "question", "Coordinator AWAIT_USER_DECISION"
-                )
+                _require_nonempty_text(result, "question", "Coordinator AWAIT_USER_DECISION")
                 if not recovery_coordinator:
-                    state["pending"] = {
-                        "from": "coordinator",
-                        "to": "user",
-                        "payload": result,
-                    }
+                    state["pending"] = {"from": "coordinator", "to": "user", "payload": result}
             elif status == "AWAIT_USER_MERGE":
-                _require_nonempty_text(
-                    result, "reviewed_head", "Coordinator AWAIT_USER_MERGE"
-                )
+                _require_nonempty_text(result, "reviewed_head", "Coordinator AWAIT_USER_MERGE")
                 if not state.get("task_review_clean_checkpoint"):
-                    raise InvalidAgentResult(
-                        "Coordinator AWAIT_USER_MERGE requires TASK_REVIEW_CLEAN"
-                    )
+                    raise InvalidAgentResult("Coordinator AWAIT_USER_MERGE requires TASK_REVIEW_CLEAN")
                 if result.get("draft") is not False:
-                    raise InvalidAgentResult(
-                        "Coordinator AWAIT_USER_MERGE must include draft=false"
-                    )
+                    raise InvalidAgentResult("Coordinator AWAIT_USER_MERGE must include draft=false")
                 if recovery_coordinator:
                     raise InvalidAgentResult(
                         "Coordinator AWAIT_USER_MERGE requires no unresolved specialist handoff"
@@ -707,33 +647,18 @@ def invoke_agent(
                 certification = state.get("review_certification")
                 reviewed_head = result["reviewed_head"].strip()
                 current_head = repository_guard["head"]
-                certified_head = (
-                    certification.get("head") if isinstance(certification, dict) else None
-                )
-                if (
-                    not certified_head
-                    or reviewed_head != certified_head
-                    or reviewed_head != current_head
-                ):
+                certified_head = certification.get("head") if isinstance(certification, dict) else None
+                if not certified_head or reviewed_head != certified_head or reviewed_head != current_head:
                     raise InvalidAgentResult(
-                        "Coordinator AWAIT_USER_MERGE requires reviewed_head to match "
-                        "the current HEAD certified by REVIEW_CLEAN"
+                        "Coordinator AWAIT_USER_MERGE requires reviewed_head to match the current HEAD certified by REVIEW_CLEAN"
                     )
                 current_body_hash = _current_pr_body_hash(repo)
                 certified_body_hash = certification.get("pr_body_hash")
-                if (
-                    certified_body_hash is not None
-                    and current_body_hash != certified_body_hash
-                ):
+                if certified_body_hash is not None and current_body_hash != certified_body_hash:
                     raise InvalidAgentResult(
-                        "Coordinator AWAIT_USER_MERGE requires the current PR description "
-                        "to match REVIEW_CLEAN certification"
+                        "Coordinator AWAIT_USER_MERGE requires the current PR description to match REVIEW_CLEAN certification"
                     )
-                state["pending"] = {
-                    "from": "coordinator",
-                    "to": "user",
-                    "payload": result,
-                }
+                state["pending"] = {"from": "coordinator", "to": "user", "payload": result}
                 _publish_handoff_trace(
                     repo, workflow_id, state["pending"], head=repository_guard["head"]
                 )
@@ -742,10 +667,9 @@ def invoke_agent(
 
     elif agent == "testing":
         if status == "RED_COMPLETE":
+            _verify_red_command(repo, result["test_command"])
             state["pending"] = _reverse_handoff(agent, result)
-            _publish_handoff_trace(
-                repo, workflow_id, state["pending"], head=repository_guard["head"]
-            )
+            _publish_handoff_trace(repo, workflow_id, state["pending"], head=repository_guard["head"])
         elif status == "BLOCKED":
             _publish_specialist_failure_trace(
                 repo, workflow_id, pending, head=repository_guard["head"], reason="BLOCKED"
@@ -774,9 +698,7 @@ def invoke_agent(
                     "head": repository_guard["head"],
                     "pr_body_hash": _current_pr_body_hash(repo),
                 }
-            _publish_handoff_trace(
-                repo, workflow_id, state["pending"], head=repository_guard["head"]
-            )
+            _publish_handoff_trace(repo, workflow_id, state["pending"], head=repository_guard["head"])
         elif status == "BLOCKED":
             _publish_specialist_failure_trace(
                 repo, workflow_id, pending, head=repository_guard["head"], reason="BLOCKED"
@@ -843,10 +765,7 @@ def main(argv=None) -> int:
                 return 2
     except Exception as exc:
         error = {"status": "ERROR", "error": str(exc)}
-        if isinstance(
-            exc,
-            (CodexInvocationError, InvalidAgentResult, AgentRepositoryMutationError),
-        ):
+        if isinstance(exc, (CodexInvocationError, InvalidAgentResult, AgentRepositoryMutationError)):
             try:
                 unverified_artifacts = _worktree_status(repo)
             except Exception:

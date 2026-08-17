@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from run_codex import InvalidAgentResult, invoke_agent
 
@@ -69,19 +70,25 @@ class RedVerificationTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(InvalidAgentResult, "must still fail before GREEN"):
-                invoke_agent(
-                    agent="testing",
-                    workflow_id="issue-red",
-                    repo=repo,
-                    task="ignored",
-                    state_file=state_file,
-                    prompt_dir=prompts,
-                    runner=FakeRunner(),
-                )
+            with patch("run_codex._publish_specialist_failure_trace") as failure_trace:
+                with self.assertRaisesRegex(InvalidAgentResult, "must still fail before GREEN"):
+                    invoke_agent(
+                        agent="testing",
+                        workflow_id="issue-red",
+                        repo=repo,
+                        task="ignored",
+                        state_file=state_file,
+                        prompt_dir=prompts,
+                        runner=FakeRunner(),
+                    )
 
             state = json.loads(state_file.read_text(encoding="utf-8"))
             self.assertEqual(state["pending"], pending)
+            self.assertEqual(failure_trace.call_count, 1)
+            self.assertIn(
+                "Testing RED_COMPLETE test_command must still fail before GREEN",
+                failure_trace.call_args.kwargs["reason"],
+            )
 
 
 if __name__ == "__main__":

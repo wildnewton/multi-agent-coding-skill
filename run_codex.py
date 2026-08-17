@@ -581,21 +581,32 @@ def invoke_agent(
             )
         raise CodexInvocationError(f"Codex exited with status {completed.returncode}: {detail}")
 
-    thread_id, result = _parse_output(completed.stdout)
-    status = result["status"]
-    if status not in config["statuses"]:
-        raise InvalidAgentResult(f"status {status!r} is invalid for agent {agent!r}")
-    if "commit" in result:
-        raise InvalidAgentResult(
-            "agents must not include commit; the orchestration layer owns git commit creation"
-        )
-    if agent in specialists and "next_agent" in result:
-        raise InvalidAgentResult(f"agent {agent!r} is not allowed to choose next_agent")
-    if agent == "testing" and status == "RED_COMPLETE":
-        _require_nonempty_text(result, "test_command", "Testing RED_COMPLETE")
-    if agent == "task_review" and status in {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED"}:
-        for field in TASK_REVIEW_FIELDS:
-            _require_nonempty_text(result, field, f"Task Review {status}")
+    try:
+        thread_id, result = _parse_output(completed.stdout)
+        status = result["status"]
+        if status not in config["statuses"]:
+            raise InvalidAgentResult(f"status {status!r} is invalid for agent {agent!r}")
+        if "commit" in result:
+            raise InvalidAgentResult(
+                "agents must not include commit; the orchestration layer owns git commit creation"
+            )
+        if agent in specialists and "next_agent" in result:
+            raise InvalidAgentResult(f"agent {agent!r} is not allowed to choose next_agent")
+        if agent == "testing" and status == "RED_COMPLETE":
+            _require_nonempty_text(result, "test_command", "Testing RED_COMPLETE")
+        if agent == "task_review" and status in {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED"}:
+            for field in TASK_REVIEW_FIELDS:
+                _require_nonempty_text(result, field, f"Task Review {status}")
+    except InvalidAgentResult as exc:
+        if agent in specialists and isinstance(pending, dict):
+            _publish_specialist_failure_trace(
+                repo,
+                workflow_id,
+                pending,
+                head=repository_guard["head"],
+                reason=f"Rejected specialist result: {exc}",
+            )
+        raise
 
     if agent == "coordinator":
         if status == "HANDOFF":
@@ -682,7 +693,17 @@ def invoke_agent(
 
     elif agent == "testing":
         if status == "RED_COMPLETE":
-            _verify_red_command(repo, result["test_command"])
+            try:
+                _verify_red_command(repo, result["test_command"])
+            except InvalidAgentResult as exc:
+                _publish_specialist_failure_trace(
+                    repo,
+                    workflow_id,
+                    pending,
+                    head=repository_guard["head"],
+                    reason=f"Mechanical verification failed: {exc}",
+                )
+                raise
             state["pending"] = _reverse_handoff(agent, result)
             _publish_handoff_trace(repo, workflow_id, state["pending"], head=repository_guard["head"])
         elif status == "BLOCKED":
@@ -713,9 +734,20 @@ def invoke_agent(
         if status in {"REVIEW_CLEAN", "CHANGES_REQUIRED"}:
             state["pending"] = _reverse_handoff(agent, result)
             if status == "REVIEW_CLEAN":
+                try:
+                    pr_body_hash = _current_pr_body_hash(repo)
+                except InvalidAgentResult as exc:
+                    _publish_specialist_failure_trace(
+                        repo,
+                        workflow_id,
+                        pending,
+                        head=repository_guard["head"],
+                        reason=f"Mechanical verification failed: {exc}",
+                    )
+                    raise
                 state["review_certification"] = {
                     "head": repository_guard["head"],
-                    "pr_body_hash": _current_pr_body_hash(repo),
+                    "pr_body_hash": pr_body_hash,
                 }
             _publish_handoff_trace(repo, workflow_id, state["pending"], head=repository_guard["head"])
         elif status == "BLOCKED":

@@ -107,20 +107,42 @@ class InvocationFailureTests(unittest.TestCase):
         def runner(command, cwd, input_text, *, timeout_seconds):
             (Path(cwd) / "invalid.txt").write_text("partial\n", encoding="utf-8")
             return subprocess.CompletedProcess(command, 0, stdout=codex_stdout("no result"), stderr="")
-        rc, _, stderr = self.run_main_with(runner)
+        with patch("run_codex._publish_specialist_failure_trace") as failure_trace:
+            rc, _, stderr = self.run_main_with(runner)
         payload = json.loads(stderr)
         self.assertEqual(rc, 2)
         self.assertEqual(payload["unverified_artifacts"], ["?? invalid.txt"])
+        self.assertEqual(failure_trace.call_count, 1)
+        self.assertIn("Codex output did not contain HERMES_RESULT", failure_trace.call_args.kwargs["reason"])
 
     def test_malformed_result_is_failed_and_reports_unverified_artifacts(self):
         def runner(command, cwd, input_text, *, timeout_seconds):
             (Path(cwd) / "malformed.txt").write_text("partial\n", encoding="utf-8")
             return subprocess.CompletedProcess(command, 0, stdout=codex_stdout('HERMES_RESULT={"status":'), stderr="")
-        rc, _, stderr = self.run_main_with(runner)
+        with patch("run_codex._publish_specialist_failure_trace") as failure_trace:
+            rc, _, stderr = self.run_main_with(runner)
         payload = json.loads(stderr)
         self.assertEqual(rc, 2)
         self.assertIn("not valid JSON", payload["error"])
         self.assertEqual(payload["unverified_artifacts"], ["?? malformed.txt"])
+        self.assertEqual(failure_trace.call_count, 1)
+        self.assertIn("HERMES_RESULT is not valid JSON", failure_trace.call_args.kwargs["reason"])
+
+    def test_role_invalid_result_is_durably_traced(self):
+        def runner(command, cwd, input_text, *, timeout_seconds):
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=codex_stdout('HERMES_RESULT={"status":"REVIEW_CLEAN"}'),
+                stderr="",
+            )
+        with patch("run_codex._publish_specialist_failure_trace") as failure_trace:
+            rc, _, stderr = self.run_main_with(runner)
+        payload = json.loads(stderr)
+        self.assertEqual(rc, 2)
+        self.assertIn("invalid for agent 'testing'", payload["error"])
+        self.assertEqual(failure_trace.call_count, 1)
+        self.assertIn("invalid for agent 'testing'", failure_trace.call_args.kwargs["reason"])
 
     def test_explicit_timeout_reaches_default_runner(self):
         seen = {}

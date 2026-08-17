@@ -7,20 +7,13 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from run_codex import (
-    DEFAULT_AGENT_TIMEOUT_SECONDS,
-    _default_runner,
-    main,
-)
+from run_codex import DEFAULT_AGENT_TIMEOUT_SECONDS, _default_runner, main
 
 
 def codex_stdout(final_message):
     events = [
         {"type": "thread.started", "thread_id": "T9"},
-        {
-            "type": "item.completed",
-            "item": {"type": "agent_message", "text": final_message},
-        },
+        {"type": "item.completed", "item": {"type": "agent_message", "text": final_message}},
     ]
     return "\n".join(json.dumps(event) for event in events) + "\n"
 
@@ -34,19 +27,26 @@ class InvocationFailureTests(unittest.TestCase):
         self.repo.mkdir()
         self.prompts = self.root / "prompts"
         self.prompts.mkdir()
-        for role in ("testing", "coordinator", "review"):
-            (self.prompts / f"{role}.md").write_text(
-                f"ROLE:{role}\n", encoding="utf-8"
-            )
+        for role in ("testing", "coordinator", "task_review", "review"):
+            (self.prompts / f"{role}.md").write_text(f"ROLE:{role}\n", encoding="utf-8")
         self.state_file = self.root / "state.json"
         self.state_file.write_text(
             json.dumps(
                 {
                     "workflow_id": "issue-9",
                     "sessions": {},
-                    "pending_agent": "testing",
-                    "pending_result_ready": False,
-                    "review_clean_head": None,
+                    "pending": {
+                        "from": "coordinator",
+                        "to": "testing",
+                        "payload": {
+                            "status": "HANDOFF",
+                            "next_agent": "testing",
+                            "task": "test failure handling",
+                            "reason": "failure path needs Testing",
+                        },
+                    },
+                    "review_certification": None,
+                    "task_review_clean_checkpoint": "fixture-approved",
                 }
             ),
             encoding="utf-8",
@@ -59,28 +59,17 @@ class InvocationFailureTests(unittest.TestCase):
         self._git("commit", "-m", "initial")
 
     def _git(self, *args):
-        return subprocess.run(
-            ["git", *args],
-            cwd=self.repo,
-            check=True,
-            text=True,
-            capture_output=True,
-        )
+        return subprocess.run(["git", *args], cwd=self.repo, check=True, text=True, capture_output=True)
 
     def argv(self, timeout="1800"):
         return [
-            "--agent", "testing",
-            "--workflow", "issue-9",
-            "--repo", str(self.repo),
-            "--task", "test failure handling",
-            "--state-file", str(self.state_file),
-            "--prompt-dir", str(self.prompts),
-            "--timeout-seconds", timeout,
+            "--agent", "testing", "--workflow", "issue-9", "--repo", str(self.repo),
+            "--task", "external task is ignored", "--state-file", str(self.state_file),
+            "--prompt-dir", str(self.prompts), "--timeout-seconds", timeout,
         ]
 
     def run_main_with(self, runner, *, timeout="1800"):
-        stderr = io.StringIO()
-        stdout = io.StringIO()
+        stderr = io.StringIO(); stdout = io.StringIO()
         with patch("run_codex._default_runner", side_effect=runner):
             with redirect_stderr(stderr), redirect_stdout(stdout):
                 rc = main(self.argv(timeout))
@@ -99,7 +88,6 @@ class InvocationFailureTests(unittest.TestCase):
         def runner(command, cwd, input_text, *, timeout_seconds):
             (Path(cwd) / "partial.txt").write_text("partial\n", encoding="utf-8")
             raise subprocess.TimeoutExpired(command, timeout_seconds)
-
         rc, _, stderr = self.run_main_with(runner, timeout="10")
         payload = json.loads(stderr)
         self.assertEqual(rc, 2)
@@ -110,7 +98,6 @@ class InvocationFailureTests(unittest.TestCase):
         def runner(command, cwd, input_text, *, timeout_seconds):
             (Path(cwd) / "failed.txt").write_text("partial\n", encoding="utf-8")
             return subprocess.CompletedProcess(command, 1, stdout="", stderr="failed")
-
         rc, _, stderr = self.run_main_with(runner)
         payload = json.loads(stderr)
         self.assertEqual(rc, 2)
@@ -119,10 +106,7 @@ class InvocationFailureTests(unittest.TestCase):
     def test_invalid_result_is_failed_and_reports_unverified_artifacts(self):
         def runner(command, cwd, input_text, *, timeout_seconds):
             (Path(cwd) / "invalid.txt").write_text("partial\n", encoding="utf-8")
-            return subprocess.CompletedProcess(
-                command, 0, stdout=codex_stdout("no result"), stderr=""
-            )
-
+            return subprocess.CompletedProcess(command, 0, stdout=codex_stdout("no result"), stderr="")
         rc, _, stderr = self.run_main_with(runner)
         payload = json.loads(stderr)
         self.assertEqual(rc, 2)
@@ -131,13 +115,7 @@ class InvocationFailureTests(unittest.TestCase):
     def test_malformed_result_is_failed_and_reports_unverified_artifacts(self):
         def runner(command, cwd, input_text, *, timeout_seconds):
             (Path(cwd) / "malformed.txt").write_text("partial\n", encoding="utf-8")
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout=codex_stdout('HERMES_RESULT={"status":'),
-                stderr="",
-            )
-
+            return subprocess.CompletedProcess(command, 0, stdout=codex_stdout('HERMES_RESULT={"status":'), stderr="")
         rc, _, stderr = self.run_main_with(runner)
         payload = json.loads(stderr)
         self.assertEqual(rc, 2)
@@ -146,19 +124,9 @@ class InvocationFailureTests(unittest.TestCase):
 
     def test_explicit_timeout_reaches_default_runner(self):
         seen = {}
-
         def runner(command, cwd, input_text, *, timeout_seconds):
             seen["timeout_seconds"] = timeout_seconds
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout=codex_stdout(
-                    'HERMES_RESULT={"status":"RED_COMPLETE",'
-                    '"test_command":"python -m unittest"}'
-                ),
-                stderr="",
-            )
-
+            return subprocess.CompletedProcess(command, 0, stdout=codex_stdout('HERMES_RESULT={"status":"RED_COMPLETE","test_command":"python -m unittest"}'), stderr="")
         rc, _, _ = self.run_main_with(runner, timeout="1234")
         self.assertEqual(rc, 0)
         self.assertEqual(seen["timeout_seconds"], 1234)

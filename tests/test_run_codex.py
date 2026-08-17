@@ -170,6 +170,14 @@ class InvokeAgentTests(unittest.TestCase):
         with self.assertRaises(InvalidAgentResult):
             self.invoke("testing", FakeRunner([codex_stdout("T", 'HERMES_RESULT={"status":"GREEN_COMPLETE"}')]))
 
+    def test_review_changes_required_requires_findings(self):
+        self.prime_pending("review")
+        before = self.state()["pending"]
+        output = 'HERMES_RESULT={"status":"CHANGES_REQUIRED"}'
+        with self.assertRaisesRegex(InvalidAgentResult, "must include non-empty findings"):
+            self.invoke("review", FakeRunner([codex_stdout("R", output)]))
+        self.assertEqual(self.state()["pending"], before)
+
     def test_specialist_requires_matching_pending_target(self):
         runner = FakeRunner([codex_stdout("R", REVIEW_RESULT)])
         with self.assertRaises(InvalidAgentResult):

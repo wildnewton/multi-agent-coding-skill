@@ -29,12 +29,7 @@ Only Coordinator chooses semantic routing. Coordinator and Testing persist per w
 
 - Agents never mutate git or GitHub state. Task Review and Review are read-only; Coordinator is read-only until Task Review is clean.
 - New semantic code-change work must pass fresh Task Review before Testing, GREEN, or Review.
-- Workflow transport is one durable outstanding handoff:
-
-```text
-pending = { from, to, payload }
-```
-
+- Workflow transport is one durable outstanding handoff: `pending = { from, to, payload }`.
 - Specialists are invoked from the exact pending payload. Accepted specialist results return to Coordinator as the exact reverse handoff; Hermes never reconstructs specialist tasks/results and there is no `--completed-agent` lifecycle.
 - Testing `RED_COMPLETE` is mechanically accepted only while its reported `test_command` still fails.
 - Specialist timeout, `BLOCKED`, malformed/invalid output, non-zero exit, or failed mechanical acceptance leaves the original specialist handoff unresolved. Recovery Coordinator remains read-only.
@@ -47,8 +42,6 @@ pending = { from, to, payload }
 
 ## Invocation
 
-Use one runner for all roles:
-
 ```bash
 python3 <skill-dir>/run_codex.py \
   --agent <coordinator|task_review|testing|review> \
@@ -60,50 +53,37 @@ python3 <skill-dir>/run_codex.py \
 
 Use a stable workflow id, normally `issue-<number>` or `pr-<number>`; use `issue-<number>` when Task Review must trace to a canonical Issue.
 
-Run long-lived role invocations as background jobs with completion notification. The immediate process spawn is dispatch evidence only; do not route the next step until `run_codex.py` has actually completed and its result has been retrieved.
+Run long-lived role invocations as background jobs with completion notification. Process spawn is dispatch evidence only; do not route again until `run_codex.py` has completed and its result has been retrieved.
 
-Hermes may specify which role to invoke, but the Executor rejects a role that is not the current legal receiver. Specialist invocation content comes from `pending.payload`; `--task` is only the initial Coordinator task, recovery evidence, or a user answer when the workflow is waiting on the user.
+Hermes may specify which role to invoke, but the Executor rejects a role that is not the current legal receiver. Specialist content comes from `pending.payload`; `--task` is only the initial Coordinator task, recovery evidence, or a user answer when waiting on the user.
 
 ## Workflow
 
-### 1. Coordinator -> Task Review -> Coordinator
+1. **Coordinator -> Task Review -> Coordinator**  
+   Start from the user request and decisive repository evidence. Coordinator sends the complete canonical task to fresh Task Review and revises/repeats on `CHANGES_REQUIRED` until clean. No implementation/test edits are allowed before clean Task Review.
 
-Start Coordinator with the user request and decisive repository evidence. Coordinator sends the complete canonical task to fresh Task Review and revises/repeats on `CHANGES_REQUIRED` until clean.
+2. **Coordinator -> Testing -> Coordinator**  
+   For executable behavior needing new/corrected test intent, Coordinator hands off to Testing. Testing owns test/fixture/helper edits; the Executor mechanically verifies the reported RED command before accepting the exact result. Hermes may then commit/push RED changes and create/update the Draft PR.
 
-No implementation/test edits are allowed before Task Review is clean.
+3. **GREEN -> Review -> Coordinator**  
+   Coordinator implements the smallest GREEN. Hermes performs applicable commit/push/test/CI/PR-description mechanics, then Coordinator hands the current change to a fresh Review. `REVIEW_CLEAN` certifies the reviewed HEAD and PR description; it does not authorize merge. Fixes require fresh Review again.
 
-### 2. Coordinator -> Testing -> Coordinator
+4. **User decision**  
+   On `AWAIT_USER_DECISION`, Hermes asks the user and passes the exact answer back. The Executor persists `User -> Coordinator` before resuming Coordinator so retry reuses the accepted answer.
 
-For executable behavior needing new/corrected test intent, Coordinator hands off to Testing. Testing owns test/fixture/helper edits and reports the complete RED command. The Executor re-runs that command before accepting the result.
+5. **Merge approval**  
+   `AWAIT_USER_MERGE` is valid only after semantic readiness. The Executor mechanically requires valid Task Review/Review certifications, no unresolved specialist ownership, current local/PR HEAD consistency, and unchanged reviewed PR description. Hermes confirms remaining tests/CI/external gates, then asks the user. Merge only after explicit approval.
 
-After accepted RED, Hermes may commit/push the test changes and create/update the Draft PR. Coordinator receives the exact Testing result and decides whether more Testing or GREEN is next.
-
-### 3. GREEN -> Review -> Coordinator
-
-Coordinator implements the smallest GREEN once the task and executable intent are sufficiently pinned. Hermes performs applicable commit/push/test/CI/PR-description mechanics, then Coordinator hands the current change to a fresh Review.
-
-`REVIEW_CLEAN` certifies the reviewed HEAD and PR description; it does not authorize merge. On `CHANGES_REQUIRED`, Coordinator chooses the smallest justified correction and requests fresh Review again.
-
-### 4. User decision
-
-When Coordinator returns `AWAIT_USER_DECISION`, Hermes asks the user and passes the exact answer back. The Executor persists `User -> Coordinator` before resuming Coordinator so retry uses the accepted answer.
-
-### 5. Merge approval
-
-Coordinator may return `AWAIT_USER_MERGE` only after the workflow is semantically ready. The Executor mechanically requires valid Task Review and Review certifications, no unresolved specialist ownership, current local/PR HEAD consistency, and unchanged reviewed PR description before creating the merge-approval handoff.
-
-Hermes then confirms remaining tests/CI/external gates and presents the merge decision to the user. Only after explicit approval may Hermes perform the merge. Capability-isolating raw git/GitHub privileges behind the Executor is outside this MVP.
+Capability-isolating raw git/GitHub privileges behind the Executor is outside this MVP.
 
 ## Failure handling
 
-- If `run_codex.py` returns `ERROR`, do not reinterpret partial output as a valid agent result.
-- If `unverified_artifacts` are reported, do not commit them as accepted agent work.
+- `ERROR` is not an agent result; never reinterpret partial output as accepted work.
+- Do not commit reported `unverified_artifacts`.
 - Specialist failure leaves its pending ownership unresolved; give decisive recovery evidence to Coordinator rather than doing specialist work in Hermes.
-- Coordinator failure that cannot be mechanically recovered is reported to the user.
+- Report unrecoverable Coordinator failure to the user.
 
 ## Verification
-
-For this skill repository:
 
 ```bash
 python3 -m unittest discover -s tests -v

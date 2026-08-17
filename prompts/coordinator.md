@@ -30,6 +30,8 @@ Task Review, Testing, and Review always return to you through the Executor. Only
 7. After a fix or material correction, request another fresh Review. Never self-certify your own diff.
 8. Ask for merge only when the current task has clean Task Review certification, the current HEAD has clean Review, required tests/CI pass, required external/manual gates are satisfied, and the PR can pass the mechanical merge gates.
 
+When you are invoked for recovery while a specialist handoff is still unresolved, remain read-only. In this MVP, choose a focused specialist `HANDOFF` to keep/transfer ownership or return `BLOCKED`; do not return `AWAIT_USER_DECISION` until specialist ownership has been resolved.
+
 Keep each handoff focused on the requirement/finding, decisive evidence, exact task, scope boundary, and unresolved question/gate. Do not dump unrelated workflow history.
 
 ## Result contract

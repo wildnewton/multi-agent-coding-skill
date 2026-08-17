@@ -32,7 +32,7 @@ Only Coordinator chooses semantic routing. Coordinator and Testing persist per w
 - Workflow transport is one durable outstanding handoff: `pending = { from, to, payload }`.
 - Specialists are invoked from the exact pending payload. Accepted specialist results return to Coordinator as the exact reverse handoff; Hermes never reconstructs specialist tasks/results and there is no `--completed-agent` lifecycle.
 - Testing `RED_COMPLETE` is mechanically accepted only while its reported `test_command` still fails.
-- Specialist timeout, `BLOCKED`, malformed/invalid output, non-zero exit, or failed mechanical acceptance leaves the original specialist handoff unresolved. Recovery Coordinator remains read-only.
+- Specialist timeout, `BLOCKED`, malformed/invalid output, non-zero exit, or failed mechanical acceptance leaves the original specialist handoff unresolved. Recovery Coordinator remains read-only and, in this MVP, may only replace that ownership with a new specialist `HANDOFF` or return `BLOCKED`; it cannot wait on a user decision while specialist ownership is unresolved.
 - Task Review clean certification persists as the accepted task checkpoint. Review clean certification persists as reviewed HEAD + PR-description identity. Stale certification blocks merge readiness.
 - Formal agent handoffs and workflow-relevant specialist failures are traced by the Executor to the canonical Issue/PR. Ordinary user answers are not automatically published.
 - Audit is fail-closed but not exactly-once; do not add handoff IDs/history/dedup machinery for rare duplicate comments.
@@ -69,10 +69,10 @@ Hermes may specify which role to invoke, but the Executor rejects a role that is
    Coordinator implements the smallest GREEN. Hermes performs applicable commit/push/test/CI/PR-description mechanics, then Coordinator hands the current change to a fresh Review. `REVIEW_CLEAN` certifies the reviewed HEAD and PR description; it does not authorize merge. Fixes require fresh Review again.
 
 4. **User decision**  
-   On `AWAIT_USER_DECISION`, Hermes asks the user and passes the exact answer back. The Executor persists `User -> Coordinator` before resuming Coordinator so retry reuses the accepted answer.
+   On `AWAIT_USER_DECISION`, Hermes asks the user and passes the exact answer back. The Executor persists `User -> Coordinator` before resuming Coordinator so retry reuses the accepted answer. This path is only available when no specialist handoff remains unresolved.
 
 5. **Merge approval**  
-   `AWAIT_USER_MERGE` is valid only after semantic readiness. The Executor mechanically requires valid Task Review/Review certifications, no unresolved specialist ownership, current local/PR HEAD consistency, and unchanged reviewed PR description. Hermes confirms remaining tests/CI/external gates, then asks the user. Merge only after explicit approval.
+   `AWAIT_USER_MERGE` is valid only after semantic readiness. The Executor mechanically requires a clean worktree, valid Task Review/Review certifications, no unresolved specialist ownership, current local/PR HEAD consistency, and unchanged reviewed PR description. Before asking the user, Hermes confirms remaining tests/CI/external gates, marks a Draft PR ready if needed, and verifies GitHub reports `draft=false`. On explicit approval, Hermes merges with `reviewed_head` as the atomic expected-HEAD precondition; if the PR HEAD moved, do not merge and return the current PR HEAD plus mismatch evidence to Coordinator.
 
 Capability-isolating raw git/GitHub privileges behind the Executor is outside this MVP.
 
@@ -80,7 +80,7 @@ Capability-isolating raw git/GitHub privileges behind the Executor is outside th
 
 - `ERROR` is not an agent result; never reinterpret partial output as accepted work.
 - Do not commit reported `unverified_artifacts`.
-- Specialist failure leaves its pending ownership unresolved; give decisive recovery evidence to Coordinator rather than doing specialist work in Hermes.
+- Specialist failure leaves its pending ownership unresolved. Before recovery, Hermes discards/restores failed or `BLOCKED` invocation leftovers, then gives decisive failure evidence to read-only Coordinator rather than doing specialist work itself.
 - Report unrecoverable Coordinator failure to the user.
 
 ## Verification

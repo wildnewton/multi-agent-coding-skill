@@ -35,7 +35,7 @@ print(json.dumps({{
     "type":"item.completed",
     "item":{{
         "type":"agent_message",
-        "text":'HERMES_RESULT={{"status":"RED_COMPLETE","test_command":"python -m unittest"}}'
+        "text":'HERMES_RESULT={{"status":"RED_COMPLETE","test_command":"false"}}'
     }}
 }}))
 ''',

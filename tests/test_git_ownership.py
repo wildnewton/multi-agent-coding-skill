@@ -88,10 +88,12 @@ class GitOwnershipContractTests(unittest.TestCase):
         )
 
     def invoke_with_runner(self, agent, runner):
+        current_head = self._git("rev-parse", "HEAD").stdout.strip()
         with (
             patch("run_codex._publish_handoff_trace"),
             patch("run_codex._publish_specialist_failure_trace"),
             patch("run_codex._current_pr_body_hash", return_value=None),
+            patch("run_codex._current_pr_head", return_value=current_head),
         ):
             return invoke_agent(
                 agent=agent,

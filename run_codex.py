@@ -87,10 +87,8 @@ def _load_state(path: Path, workflow_id: str) -> dict:
         return {
             "workflow_id": workflow_id,
             "sessions": {},
-            "pending_agent": None,
-            "pending_result_ready": False,
-            "review_clean_head": None,
-            "pending_task_review_checkpoint": None,
+            "pending": None,
+            "review_certification": None,
             "task_review_clean_checkpoint": None,
         }
     state = json.loads(path.read_text(encoding="utf-8"))
@@ -101,11 +99,16 @@ def _load_state(path: Path, workflow_id: str) -> dict:
         )
     state.setdefault("workflow_id", workflow_id)
     state.setdefault("sessions", {})
-    state.setdefault("pending_agent", None)
-    state.setdefault("pending_result_ready", False)
-    state.setdefault("review_clean_head", None)
-    state.setdefault("pending_task_review_checkpoint", None)
+    state.setdefault("pending", None)
+    state.setdefault("review_certification", None)
     state.setdefault("task_review_clean_checkpoint", None)
+    for obsolete in (
+        "pending_agent",
+        "pending_result_ready",
+        "pending_task_review_checkpoint",
+        "review_clean_head",
+    ):
+        state.pop(obsolete, None)
     return state
 
 
@@ -171,11 +174,12 @@ def _verify_task_review_audit_comment(
             "issue-backed Task Review completion requires task_review_comment_id"
         )
 
-    checkpoint = state.get("pending_task_review_checkpoint")
-    if not checkpoint:
-        raise InvalidAgentResult(
-            "Task Review completion requires a pending task-review checkpoint"
-        )
+    pending = state.get("pending")
+    payload = pending.get("payload") if isinstance(pending, dict) else None
+    task = payload.get("task") if isinstance(payload, dict) else None
+    if not isinstance(task, str) or not task.strip():
+        raise InvalidAgentResult("Task Review completion requires a pending task handoff")
+    checkpoint = _task_review_checkpoint(task)
 
     expected_verdict = (
         "TASK_REVIEW_CLEAN"
@@ -384,6 +388,18 @@ def _has_nonempty_text(result: dict, field: str) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _pending_payload_task(pending: dict) -> str:
+    payload = pending.get("payload")
+    task = payload.get("task") if isinstance(payload, dict) else None
+    if not isinstance(task, str) or not task.strip():
+        raise InvalidAgentResult("pending specialist handoff must include non-empty task")
+    return task
+
+
+def _reverse_handoff(agent: str, result: dict) -> dict:
+    return {"from": agent, "to": "coordinator", "payload": result}
+
+
 def invoke_agent(
     *,
     agent: str,
@@ -401,15 +417,9 @@ def invoke_agent(
         raise ValueError(f"unknown agent {agent!r}; expected one of {', '.join(AGENTS)}")
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
-    if completed_agent not in {None, "testing", "task_review", "review"}:
-        raise ValueError("completed_agent must be testing, task_review, review, or None")
-    if completed_agent is not None and agent != "coordinator":
+    if completed_agent is not None or task_review_comment_id is not None:
         raise InvalidAgentResult(
-            "completed_agent may only be supplied when resuming Coordinator"
-        )
-    if task_review_comment_id is not None and completed_agent != "task_review":
-        raise InvalidAgentResult(
-            "task_review_comment_id may only be supplied when completing task_review"
+            "specialist completion handshakes are obsolete; use the pending handoff lifecycle"
         )
 
     repo = Path(repo).resolve()
@@ -424,68 +434,40 @@ def invoke_agent(
     role_path = prompt_dir / config["prompt"]
     role_text = role_path.read_text(encoding="utf-8")
     state = _load_state(state_file, workflow_id)
-
-    if completed_agent is not None:
-        if state.get("pending_agent") != completed_agent:
-            raise InvalidAgentResult(
-                f"cannot complete {completed_agent!r}; pending_agent is "
-                f"{state.get('pending_agent')!r}"
-            )
-        if not state.get("pending_result_ready"):
-            raise InvalidAgentResult(
-                f"cannot complete {completed_agent!r}; the pending specialist "
-                "has not produced a completed role-valid result"
-            )
-        if completed_agent == "task_review":
-            _verify_task_review_audit_comment(
-                repo=repo,
-                workflow_id=workflow_id,
-                comment_id=task_review_comment_id,
-                state=state,
-            )
-        state["pending_agent"] = None
-        state["pending_result_ready"] = False
-        if completed_agent == "task_review":
-            state["pending_task_review_checkpoint"] = None
-        _save_state(state_file, state)
-
-    pending_agent = state.get("pending_agent")
-    if (
-        agent == "coordinator"
-        and pending_agent is not None
-        and completed_agent is None
-        and state.get("pending_result_ready")
-    ):
-        state["pending_result_ready"] = False
-        if pending_agent == "task_review":
-            state["task_review_clean_checkpoint"] = None
-        elif pending_agent == "review":
-            state["review_clean_head"] = None
-        _save_state(state_file, state)
-
+    pending = state.get("pending")
     specialists = {"testing", "task_review", "review"}
-    if agent in specialists and pending_agent != agent:
-        raise InvalidAgentResult(
-            f"cannot invoke {agent!r}; pending_agent is {pending_agent!r}"
-        )
+
+    recovery_coordinator = (
+        agent == "coordinator"
+        and isinstance(pending, dict)
+        and pending.get("from") == "coordinator"
+        and pending.get("to") in specialists
+    )
+
+    effective_task = task
+    consumed_result_handoff = False
+    task_review_checkpoint = None
 
     if agent in specialists:
-        state["pending_result_ready"] = False
-        if agent == "task_review":
-            state["task_review_clean_checkpoint"] = None
-        elif agent == "review":
-            state["review_clean_head"] = None
-        _save_state(state_file, state)
-
-    task_review_checkpoint = None
-    if agent == "task_review":
-        task_review_checkpoint = _task_review_checkpoint(task)
-        if state.get("pending_task_review_checkpoint") != task_review_checkpoint:
+        if not isinstance(pending, dict) or pending.get("to") != agent:
+            target = pending.get("to") if isinstance(pending, dict) else None
             raise InvalidAgentResult(
-                "Task Review invocation task does not match the pending task-review checkpoint"
+                f"cannot invoke {agent!r}; pending handoff target is {target!r}"
             )
+        if pending.get("from") != "coordinator":
+            raise InvalidAgentResult(
+                f"cannot invoke {agent!r}; pending handoff is not from coordinator"
+            )
+        effective_task = _pending_payload_task(pending)
+        if agent == "task_review":
+            task_review_checkpoint = _task_review_checkpoint(effective_task)
+    elif agent == "coordinator" and isinstance(pending, dict) and pending.get("to") == "coordinator":
+        payload = pending.get("payload")
+        if not isinstance(payload, dict):
+            raise InvalidAgentResult("Coordinator pending result payload must be an object")
+        effective_task = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        consumed_result_handoff = True
 
-    recovery_coordinator = agent == "coordinator" and pending_agent is not None
     pre_task_review_coordinator = (
         agent == "coordinator" and not state.get("task_review_clean_checkpoint")
     )
@@ -508,7 +490,7 @@ def invoke_agent(
     prompt = _build_prompt(
         role_text=role_text,
         workflow_id=workflow_id,
-        task=task,
+        task=effective_task,
         include_role=session_id is None,
     )
     try:
@@ -570,9 +552,7 @@ def invoke_agent(
 
             if next_agent == "task_review":
                 state["task_review_clean_checkpoint"] = None
-                state["review_clean_head"] = None
-                state["pending_task_review_checkpoint"] = None
-                _save_state(state_file, state)
+                state["review_certification"] = None
                 _ensure_read_only_worktree(repo, "Coordinator task-review handoff")
             elif not state.get("task_review_clean_checkpoint"):
                 raise InvalidAgentResult(
@@ -589,15 +569,13 @@ def invoke_agent(
                         "Coordinator review HANDOFF must include exactly one of "
                         "full_test_command or full_test_unavailable_reason"
                     )
+                state["review_certification"] = None
 
-            state["pending_agent"] = next_agent
-            state["pending_result_ready"] = False
-            if next_agent == "task_review":
-                state["pending_task_review_checkpoint"] = _task_review_checkpoint(
-                    result["task"]
-                )
-            elif next_agent == "review":
-                state["review_clean_head"] = None
+            state["pending"] = {
+                "from": "coordinator",
+                "to": next_agent,
+                "payload": result,
+            }
         else:
             if "next_agent" in result:
                 raise InvalidAgentResult(
@@ -607,6 +585,12 @@ def invoke_agent(
                 _require_nonempty_text(
                     result, "question", "Coordinator AWAIT_USER_DECISION"
                 )
+                if not recovery_coordinator:
+                    state["pending"] = {
+                        "from": "coordinator",
+                        "to": "user",
+                        "payload": result,
+                    }
             elif status == "AWAIT_USER_MERGE":
                 _require_nonempty_text(
                     result, "reviewed_head", "Coordinator AWAIT_USER_MERGE"
@@ -619,36 +603,49 @@ def invoke_agent(
                     raise InvalidAgentResult(
                         "Coordinator AWAIT_USER_MERGE must include draft=false"
                     )
-                if state.get("pending_agent") is not None:
+                if recovery_coordinator:
                     raise InvalidAgentResult(
-                        "Coordinator AWAIT_USER_MERGE requires no unresolved pending_agent"
+                        "Coordinator AWAIT_USER_MERGE requires no unresolved specialist handoff"
                     )
+                certification = state.get("review_certification")
                 reviewed_head = result["reviewed_head"].strip()
-                review_clean_head = state.get("review_clean_head")
                 current_head = repository_guard["head"]
+                certified_head = (
+                    certification.get("head") if isinstance(certification, dict) else None
+                )
                 if (
-                    not review_clean_head
-                    or reviewed_head != review_clean_head
+                    not certified_head
+                    or reviewed_head != certified_head
                     or reviewed_head != current_head
                 ):
                     raise InvalidAgentResult(
                         "Coordinator AWAIT_USER_MERGE requires reviewed_head to match "
                         "the current HEAD certified by REVIEW_CLEAN"
                     )
+                state["pending"] = {
+                    "from": "coordinator",
+                    "to": "user",
+                    "payload": result,
+                }
+            elif status == "BLOCKED" and consumed_result_handoff:
+                state["pending"] = None
 
-    if agent == "testing" and status == "RED_COMPLETE":
-        state["pending_result_ready"] = True
-
-    if agent == "task_review" and status in {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED"}:
-        result["task_review_checkpoint"] = task_review_checkpoint
-        state["pending_result_ready"] = True
-        if status == "TASK_REVIEW_CLEAN":
-            state["task_review_clean_checkpoint"] = task_review_checkpoint
-
-    if agent == "review" and status in {"REVIEW_CLEAN", "CHANGES_REQUIRED"}:
-        state["pending_result_ready"] = True
-        if status == "REVIEW_CLEAN":
-            state["review_clean_head"] = repository_guard["head"]
+    elif agent == "testing":
+        if status == "RED_COMPLETE":
+            state["pending"] = _reverse_handoff(agent, result)
+    elif agent == "task_review":
+        if status in {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED"}:
+            state["pending"] = _reverse_handoff(agent, result)
+            if status == "TASK_REVIEW_CLEAN":
+                state["task_review_clean_checkpoint"] = task_review_checkpoint
+    elif agent == "review":
+        if status in {"REVIEW_CLEAN", "CHANGES_REQUIRED"}:
+            state["pending"] = _reverse_handoff(agent, result)
+            if status == "REVIEW_CLEAN":
+                state["review_certification"] = {
+                    "head": repository_guard["head"],
+                    "pr_body_hash": None,
+                }
 
     if config["persistent"] and session_id is None:
         if not thread_id:
@@ -680,18 +677,12 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--completed-agent",
         choices=("testing", "task_review", "review"),
-        help=(
-            "Hermes completion handshake: clear the matching pending specialist "
-            "only after its existing mechanical acceptance has passed"
-        ),
+        help="Deprecated; specialist results now return through the pending handoff.",
     )
     parser.add_argument(
         "--task-review-comment-id",
         type=int,
-        help=(
-            "GitHub Issue comment ID proving the completed issue-backed Task Review "
-            "was published before Coordinator resumes"
-        ),
+        help="Deprecated with the specialist completion handshake.",
     )
     args = parser.parse_args(argv)
 

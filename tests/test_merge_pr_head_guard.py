@@ -6,11 +6,11 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from run_codex import main
+from run_codex import MergePrHeadMismatch, main
 
 
 class MergePrHeadGuardTests(unittest.TestCase):
-    def run_main(self, result, current_pr_head):
+    def run_main(self, *, result=None, error=None):
         with tempfile.TemporaryDirectory() as tempdir:
             repo = Path(tempdir).resolve()
             stdout = io.StringIO()
@@ -25,36 +25,32 @@ class MergePrHeadGuardTests(unittest.TestCase):
                 "--task",
                 "check merge readiness",
             ]
-            with (
-                patch("run_codex.invoke_agent", return_value=result),
-                patch("run_codex._current_pr_head", return_value=current_pr_head),
-                redirect_stdout(stdout),
-                redirect_stderr(stderr),
-            ):
+            invoke = patch(
+                "run_codex.invoke_agent",
+                side_effect=error,
+                return_value=result,
+            )
+            with invoke, redirect_stdout(stdout), redirect_stderr(stderr):
                 exit_code = main(args)
             return exit_code, stdout.getvalue(), stderr.getvalue()
 
-    def test_matching_pr_head_allows_merge_readiness(self):
+    def test_accepted_merge_readiness_is_returned(self):
         result = {
             "status": "AWAIT_USER_MERGE",
             "reviewed_head": "sha-a",
             "draft": False,
         }
 
-        exit_code, stdout, stderr = self.run_main(result, "sha-a")
+        exit_code, stdout, stderr = self.run_main(result=result)
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(json.loads(stdout), result)
         self.assertEqual(stderr, "")
 
-    def test_moved_pr_head_blocks_merge_readiness(self):
-        result = {
-            "status": "AWAIT_USER_MERGE",
-            "reviewed_head": "sha-a",
-            "draft": False,
-        }
-
-        exit_code, stdout, stderr = self.run_main(result, "sha-b")
+    def test_pr_head_mismatch_is_machine_readable(self):
+        exit_code, stdout, stderr = self.run_main(
+            error=MergePrHeadMismatch("sha-a", "sha-b")
+        )
 
         self.assertEqual(exit_code, 2)
         self.assertEqual(stdout, "")

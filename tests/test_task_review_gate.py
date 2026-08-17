@@ -3,7 +3,6 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from run_codex import (
     AgentRepositoryMutationError,
@@ -16,10 +15,7 @@ from run_codex import (
 def codex_stdout(thread_id, final_message):
     events = [
         {"type": "thread.started", "thread_id": thread_id},
-        {
-            "type": "item.completed",
-            "item": {"type": "agent_message", "text": final_message},
-        },
+        {"type": "item.completed", "item": {"type": "agent_message", "text": final_message}},
     ]
     return "\n".join(json.dumps(event) for event in events) + "\n"
 
@@ -31,9 +27,7 @@ class FakeRunner:
 
     def __call__(self, command, cwd, input_text):
         self.calls.append((command, Path(cwd), input_text))
-        return subprocess.CompletedProcess(
-            command, 0, stdout=self.outputs.pop(0), stderr=""
-        )
+        return subprocess.CompletedProcess(command, 0, stdout=self.outputs.pop(0), stderr="")
 
 
 TASK_REVIEW_TASK = "Review issue 13\nRequirement: add Task Review\nAC: gate implementation"
@@ -50,7 +44,7 @@ TASK_REVIEW_CLEAN = (
     '"evidence_and_root_cause":"The gap is confirmed in the runner.",'
     '"clearer_requirement":"Add a pre-implementation Task Review gate.",'
     '"acceptance_criteria":"Task Review must be clean before Testing or Review.",'
-    '"simplest_approach":"Reuse pending specialist state and add task checkpoints."}'
+    '"simplest_approach":"Reuse the pending handoff and keep one clean checkpoint."}'
 )
 TASK_REVIEW_CHANGES = (
     'HERMES_RESULT={"status":"CHANGES_REQUIRED",'
@@ -82,9 +76,7 @@ class TaskReviewGateTests(unittest.TestCase):
         self.prompts = self.root / "prompts"
         self.prompts.mkdir()
         for role in ("testing", "coordinator", "task_review", "review"):
-            (self.prompts / f"{role}.md").write_text(
-                f"ROLE:{role}\n", encoding="utf-8"
-            )
+            (self.prompts / f"{role}.md").write_text(f"ROLE:{role}\n", encoding="utf-8")
         self._git("init")
         self._git("config", "user.email", "tests@example.com")
         self._git("config", "user.name", "Test User")
@@ -93,16 +85,10 @@ class TaskReviewGateTests(unittest.TestCase):
         self._git("commit", "-m", "initial")
 
     def _git(self, *args):
-        return subprocess.run(
-            ["git", *args],
-            cwd=self.repo,
-            check=True,
-            text=True,
-            capture_output=True,
-        )
+        return subprocess.run(["git", *args], cwd=self.repo, check=True, text=True, capture_output=True)
 
-    def invoke(self, agent, runner, task="do the task", *, completed_agent=None):
-        kwargs = dict(
+    def invoke(self, agent, runner, task="do the task"):
+        return invoke_agent(
             agent=agent,
             workflow_id="issue-13",
             repo=self.repo,
@@ -110,30 +96,24 @@ class TaskReviewGateTests(unittest.TestCase):
             state_file=self.state_file,
             prompt_dir=self.prompts,
             runner=runner,
-            completed_agent=completed_agent,
         )
-        if completed_agent != "task_review":
-            return invoke_agent(**kwargs)
-
-        state = self.state()
-        checkpoint = state["pending_task_review_checkpoint"]
-        verdict = (
-            "TASK_REVIEW_CLEAN"
-            if state.get("task_review_clean_checkpoint") == checkpoint
-            else "CHANGES_REQUIRED"
-        )
-        comment = {
-            "issue_url": "https://api.github.com/repos/example/repo/issues/13",
-            "body": (
-                f"Task checkpoint: `{checkpoint}`\n"
-                f"Verdict: `{verdict}`\n"
-            ),
-        }
-        with patch("run_codex._fetch_issue_comment", return_value=comment):
-            return invoke_agent(**kwargs, task_review_comment_id=13)
 
     def state(self):
         return json.loads(self.state_file.read_text(encoding="utf-8"))
+
+    def write_state(self, *, clean=None, review_certification=None, pending=None):
+        self.state_file.write_text(
+            json.dumps(
+                {
+                    "workflow_id": "issue-13",
+                    "sessions": {},
+                    "pending": pending,
+                    "task_review_clean_checkpoint": clean,
+                    "review_certification": review_certification,
+                }
+            ),
+            encoding="utf-8",
+        )
 
     def handoff_task_review(self):
         runner = FakeRunner([codex_stdout("C13", TASK_REVIEW_HANDOFF)])
@@ -144,19 +124,14 @@ class TaskReviewGateTests(unittest.TestCase):
     def complete_clean_task_review(self):
         self.handoff_task_review()
         runner = FakeRunner([codex_stdout("TR13", TASK_REVIEW_CLEAN)])
-        result = self.invoke("task_review", runner, task=TASK_REVIEW_TASK)
+        result = self.invoke("task_review", runner, task="ignored external task")
         self.assertEqual(result["status"], "TASK_REVIEW_CLEAN")
         return runner
 
     def test_pre_clean_coordinator_is_read_only(self):
         def editing_runner(command, cwd, input_text):
             (Path(cwd) / "production.py").write_text("changed\n", encoding="utf-8")
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout=codex_stdout("C13", TASK_REVIEW_HANDOFF),
-                stderr="",
-            )
+            return subprocess.CompletedProcess(command, 0, stdout=codex_stdout("C13", TASK_REVIEW_HANDOFF), stderr="")
 
         with self.assertRaises(AgentRepositoryMutationError):
             self.invoke("coordinator", editing_runner)
@@ -170,190 +145,86 @@ class TaskReviewGateTests(unittest.TestCase):
                 if self.state_file.exists():
                     self.state_file.unlink()
 
-    def test_task_review_handoff_records_pending_checkpoint_and_invalidates_clean(self):
-        self.state_file.write_text(
-            json.dumps(
-                {
-                    "workflow_id": "issue-13",
-                    "sessions": {},
-                    "pending_agent": None,
-                    "pending_result_ready": False,
-                    "review_clean_head": None,
-                    "pending_task_review_checkpoint": None,
-                    "task_review_clean_checkpoint": "old-clean",
-                }
-            ),
-            encoding="utf-8",
+    def test_task_review_handoff_is_single_pending_and_invalidates_certifications(self):
+        self.write_state(
+            clean="old-clean",
+            review_certification={"head": "old-head", "pr_body_hash": "old-body"},
         )
         self.handoff_task_review()
         state = self.state()
-        self.assertEqual(state["pending_agent"], "task_review")
+        self.assertEqual(state["pending"]["to"], "task_review")
+        self.assertEqual(state["pending"]["payload"]["task"], TASK_REVIEW_TASK)
         self.assertIsNone(state["task_review_clean_checkpoint"])
-        self.assertIsNotNone(state["pending_task_review_checkpoint"])
-
-    def test_task_review_handoff_invalidates_prior_code_review_certification(self):
-        head = self._git("rev-parse", "HEAD").stdout.strip()
-        self.state_file.write_text(
-            json.dumps(
-                {
-                    "workflow_id": "issue-13",
-                    "sessions": {},
-                    "pending_agent": None,
-                    "pending_result_ready": False,
-                    "review_clean_head": head,
-                    "pending_task_review_checkpoint": None,
-                    "task_review_clean_checkpoint": "old-clean",
-                }
-            ),
-            encoding="utf-8",
-        )
-
-        self.handoff_task_review()
-
-        state = self.state()
-        self.assertIsNone(state["task_review_clean_checkpoint"])
-        self.assertIsNone(state["review_clean_head"])
-
-    def test_task_review_invocation_must_match_pending_checkpoint(self):
-        self.handoff_task_review()
-        runner = FakeRunner([codex_stdout("TR13", TASK_REVIEW_CLEAN)])
-        with self.assertRaises(InvalidAgentResult):
-            self.invoke("task_review", runner, task="different task")
-        self.assertEqual(runner.calls, [])
-        self.assertIsNone(self.state()["task_review_clean_checkpoint"])
+        self.assertIsNone(state["review_certification"])
+        self.assertNotIn("pending_task_review_checkpoint", state)
 
     def test_task_review_clean_requires_all_review_fields(self):
         self.handoff_task_review()
-        incomplete = 'HERMES_RESULT={"status":"TASK_REVIEW_CLEAN"}'
-        runner = FakeRunner([codex_stdout("TR13", incomplete)])
+        runner = FakeRunner([codex_stdout("TR13", 'HERMES_RESULT={"status":"TASK_REVIEW_CLEAN"}')])
         with self.assertRaises(InvalidAgentResult):
-            self.invoke("task_review", runner, task=TASK_REVIEW_TASK)
+            self.invoke("task_review", runner)
         self.assertIsNone(self.state()["task_review_clean_checkpoint"])
 
-    def test_changes_required_completes_specialist_but_keeps_gate_closed(self):
+    def test_changes_required_returns_to_coordinator_and_keeps_gate_closed(self):
         self.handoff_task_review()
         runner = FakeRunner([codex_stdout("TR13", TASK_REVIEW_CHANGES)])
-        self.invoke("task_review", runner, task=TASK_REVIEW_TASK)
+        self.invoke("task_review", runner)
         state = self.state()
-        self.assertTrue(state["pending_result_ready"])
+        self.assertEqual((state["pending"]["from"], state["pending"]["to"]), ("task_review", "coordinator"))
         self.assertIsNone(state["task_review_clean_checkpoint"])
 
-        retry_task = "Review revised issue 13 with stale-cert invalidation"
-        retry_handoff = "HERMES_RESULT=" + json.dumps(
+        retry = "HERMES_RESULT=" + json.dumps(
             {
                 "status": "HANDOFF",
                 "next_agent": "task_review",
-                "task": retry_task,
+                "task": "Review revised issue 13",
                 "reason": "Task was revised",
             }
         )
-        coordinator = FakeRunner([codex_stdout("C13", retry_handoff)])
-        result = self.invoke(
-            "coordinator", coordinator, completed_agent="task_review"
-        )
-        self.assertEqual(result["next_agent"], "task_review")
-        self.assertIsNone(self.state()["task_review_clean_checkpoint"])
+        coordinator = FakeRunner([codex_stdout("C13", retry)])
+        self.invoke("coordinator", coordinator, task="manual copy must be ignored")
+        self.assertEqual(self.state()["pending"]["to"], "task_review")
 
     def test_task_review_clean_unlocks_testing_handoff(self):
         self.complete_clean_task_review()
-        state = self.state()
-        self.assertTrue(state["pending_result_ready"])
-        self.assertIsNotNone(state["task_review_clean_checkpoint"])
-
+        self.assertIsNotNone(self.state()["task_review_clean_checkpoint"])
         coordinator = FakeRunner([codex_stdout("C13", TESTING_HANDOFF)])
-        result = self.invoke(
-            "coordinator", coordinator, completed_agent="task_review"
-        )
+        result = self.invoke("coordinator", coordinator, task="manual copy must be ignored")
         self.assertEqual(result["next_agent"], "testing")
+        self.assertEqual(self.state()["pending"]["to"], "testing")
 
     def test_task_review_clean_unlocks_coordinator_edits(self):
         self.complete_clean_task_review()
 
         def editing_coordinator(command, cwd, input_text):
-            (Path(cwd) / "production.py").write_text(
-                "implementation\n", encoding="utf-8"
-            )
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout=codex_stdout("C13", REVIEW_HANDOFF),
-                stderr="",
-            )
+            (Path(cwd) / "production.py").write_text("implementation\n", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout=codex_stdout("C13", REVIEW_HANDOFF), stderr="")
 
-        result = self.invoke(
-            "coordinator", editing_coordinator, completed_agent="task_review"
-        )
+        result = self.invoke("coordinator", editing_coordinator)
         self.assertEqual(result["next_agent"], "review")
         self.assertTrue((self.repo / "production.py").exists())
 
     def test_existing_clean_coordinator_cannot_edit_while_handing_back_to_task_review(self):
-        self.state_file.write_text(
-            json.dumps(
-                {
-                    "workflow_id": "issue-13",
-                    "sessions": {},
-                    "pending_agent": None,
-                    "pending_result_ready": False,
-                    "review_clean_head": None,
-                    "pending_task_review_checkpoint": None,
-                    "task_review_clean_checkpoint": "old-clean",
-                }
-            ),
-            encoding="utf-8",
-        )
+        self.write_state(clean="old-clean")
 
         def editing_runner(command, cwd, input_text):
-            (Path(cwd) / "production.py").write_text(
-                "premature change\n", encoding="utf-8"
-            )
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout=codex_stdout("C13", TASK_REVIEW_HANDOFF),
-                stderr="",
-            )
+            (Path(cwd) / "production.py").write_text("premature change\n", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout=codex_stdout("C13", TASK_REVIEW_HANDOFF), stderr="")
 
         with self.assertRaises(AgentRepositoryMutationError):
             self.invoke("coordinator", editing_runner)
-        self.assertIsNone(self.state()["task_review_clean_checkpoint"])
-
-    def test_recovery_without_completion_invalidates_unaccepted_task_review_clean(self):
-        self.complete_clean_task_review()
-        self.assertIsNotNone(self.state()["task_review_clean_checkpoint"])
-        recovery = FakeRunner(
-            [
-                codex_stdout(
-                    "C13",
-                    'HERMES_RESULT={"status":"AWAIT_USER_DECISION",'
-                    '"question":"Need evidence?"}',
-                )
-            ]
-        )
-        self.invoke("coordinator", recovery)
-        state = self.state()
-        self.assertEqual(state["pending_agent"], "task_review")
-        self.assertFalse(state["pending_result_ready"])
-        self.assertIsNone(state["task_review_clean_checkpoint"])
 
     def test_task_review_is_fresh_every_time(self):
         self.handoff_task_review()
         first = FakeRunner([codex_stdout("TR1", TASK_REVIEW_CHANGES)])
-        self.invoke("task_review", first, task=TASK_REVIEW_TASK)
-
-        retry_task = "revised task"
-        retry_handoff = "HERMES_RESULT=" + json.dumps(
-            {
-                "status": "HANDOFF",
-                "next_agent": "task_review",
-                "task": retry_task,
-                "reason": "revise",
-            }
+        self.invoke("task_review", first)
+        retry = "HERMES_RESULT=" + json.dumps(
+            {"status": "HANDOFF", "next_agent": "task_review", "task": "revised task", "reason": "revise"}
         )
-        coordinator = FakeRunner([codex_stdout("C13", retry_handoff)])
-        self.invoke("coordinator", coordinator, completed_agent="task_review")
+        coordinator = FakeRunner([codex_stdout("C13", retry)])
+        self.invoke("coordinator", coordinator)
         second = FakeRunner([codex_stdout("TR2", TASK_REVIEW_CLEAN)])
-        self.invoke("task_review", second, task=retry_task)
-
+        self.invoke("task_review", second)
         self.assertEqual(first.calls[0][0], ["codex", "exec", "--json", "-"])
         self.assertEqual(second.calls[0][0], ["codex", "exec", "--json", "-"])
         self.assertNotIn("task_review", self.state()["sessions"])
@@ -363,49 +234,39 @@ class TaskReviewGateTests(unittest.TestCase):
 
         def editing_runner(command, cwd, input_text):
             (Path(cwd) / "review-edit.txt").write_text("changed\n", encoding="utf-8")
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout=codex_stdout("TR13", TASK_REVIEW_CLEAN),
-                stderr="",
-            )
+            return subprocess.CompletedProcess(command, 0, stdout=codex_stdout("TR13", TASK_REVIEW_CLEAN), stderr="")
 
         with self.assertRaises(AgentRepositoryMutationError):
-            self.invoke("task_review", editing_runner, task=TASK_REVIEW_TASK)
+            self.invoke("task_review", editing_runner)
         self.assertIsNone(self.state()["task_review_clean_checkpoint"])
 
-    def test_task_review_blocked_keeps_gate_closed(self):
+    def test_task_review_blocked_keeps_original_pending_and_gate_closed(self):
         self.handoff_task_review()
-        blocked = 'HERMES_RESULT={"status":"BLOCKED","summary":"Missing evidence"}'
-        runner = FakeRunner([codex_stdout("TR13", blocked)])
-
-        result = self.invoke("task_review", runner, task=TASK_REVIEW_TASK)
-
+        before = self.state()["pending"]
+        runner = FakeRunner([codex_stdout("TR13", 'HERMES_RESULT={"status":"BLOCKED","summary":"Missing evidence"}')])
+        result = self.invoke("task_review", runner)
         self.assertEqual(result["status"], "BLOCKED")
-        state = self.state()
-        self.assertEqual(state["pending_agent"], "task_review")
-        self.assertFalse(state["pending_result_ready"])
-        self.assertIsNone(state["task_review_clean_checkpoint"])
+        self.assertEqual(self.state()["pending"], before)
+        self.assertIsNone(self.state()["task_review_clean_checkpoint"])
 
-    def test_timeout_cannot_create_or_preserve_task_review_certification(self):
+    def test_timeout_cannot_create_task_review_certification(self):
         self.handoff_task_review()
+        before = self.state()["pending"]
 
         def timeout_runner(command, cwd, input_text):
             raise subprocess.TimeoutExpired(command, 10)
 
         with self.assertRaises(CodexInvocationError):
-            self.invoke("task_review", timeout_runner, task=TASK_REVIEW_TASK)
-        state = self.state()
-        self.assertEqual(state["pending_agent"], "task_review")
-        self.assertFalse(state["pending_result_ready"])
-        self.assertIsNone(state["task_review_clean_checkpoint"])
+            self.invoke("task_review", timeout_runner)
+        self.assertEqual(self.state()["pending"], before)
+        self.assertIsNone(self.state()["task_review_clean_checkpoint"])
 
     def test_task_review_specialist_cannot_route(self):
         self.handoff_task_review()
         routed = TASK_REVIEW_CLEAN[:-1] + ',"next_agent":"testing"}'
         runner = FakeRunner([codex_stdout("TR13", routed)])
         with self.assertRaises(InvalidAgentResult):
-            self.invoke("task_review", runner, task=TASK_REVIEW_TASK)
+            self.invoke("task_review", runner)
 
 
 if __name__ == "__main__":

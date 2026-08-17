@@ -31,7 +31,7 @@ class FakeRunner:
         return subprocess.CompletedProcess(command, 0, stdout=self.outputs.pop(0), stderr="")
 
 
-TESTING_RESULT = 'HERMES_RESULT={"status":"RED_COMPLETE","test_command":"python -m unittest","summary":"RED"}'
+TESTING_RESULT = 'HERMES_RESULT={"status":"RED_COMPLETE","test_command":"false","summary":"RED"}'
 REVIEW_RESULT = 'HERMES_RESULT={"status":"REVIEW_CLEAN"}'
 TESTING_HANDOFF = 'HERMES_RESULT={"status":"HANDOFF","next_agent":"testing","task":"Add RED","reason":"Need RED"}'
 REVIEW_HANDOFF = 'HERMES_RESULT={"status":"HANDOFF","next_agent":"review","task":"Review GREEN","reason":"GREEN ready","full_test_command":"python -m unittest"}'

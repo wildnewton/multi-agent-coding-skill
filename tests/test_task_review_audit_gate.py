@@ -5,27 +5,39 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from run_codex import InvalidAgentResult, _task_review_checkpoint, invoke_agent
+from run_codex import InvalidAgentResult, invoke_agent
+
+
+def codex_stdout(thread_id, final_message):
+    events = [
+        {"type": "thread.started", "thread_id": thread_id},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": final_message}},
+    ]
+    return "\n".join(json.dumps(event) for event in events) + "\n"
 
 
 class FakeRunner:
+    def __init__(self, output):
+        self.output = output
     def __call__(self, command, cwd, input_text):
-        events = [
-            {"type": "thread.started", "thread_id": "C17"},
-            {
-                "type": "item.completed",
-                "item": {
-                    "type": "agent_message",
-                    "text": 'HERMES_RESULT={"status":"AWAIT_USER_DECISION","question":"continue?"}',
-                },
-            },
-        ]
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout="\n".join(json.dumps(event) for event in events) + "\n",
-            stderr="",
-        )
+        return subprocess.CompletedProcess(command, 0, stdout=self.output, stderr="")
+
+
+TASK = "Review issue 17"
+HANDOFF_RESULT = {
+    "status": "HANDOFF",
+    "next_agent": "task_review",
+    "task": TASK,
+    "reason": "independent review",
+}
+CLEAN_RESULT = {
+    "status": "TASK_REVIEW_CLEAN",
+    "evidence_and_root_cause": "confirmed",
+    "clearer_requirement": "clear",
+    "acceptance_criteria": "testable",
+    "simplest_approach": "minimal",
+}
+CHANGES_RESULT = {**CLEAN_RESULT, "status": "CHANGES_REQUIRED"}
 
 
 class TaskReviewAuditGateTests(unittest.TestCase):
@@ -33,195 +45,67 @@ class TaskReviewAuditGateTests(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tempdir.cleanup)
         root = Path(self.tempdir.name)
-        self.repo = root / "repo"
-        self.repo.mkdir()
+        self.repo = root / "repo"; self.repo.mkdir()
         self.state_file = root / "state.json"
-        self.prompts = root / "prompts"
-        self.prompts.mkdir()
+        self.prompts = root / "prompts"; self.prompts.mkdir()
         for role in ("testing", "coordinator", "task_review", "review"):
-            (self.prompts / f"{role}.md").write_text(
-                f"ROLE:{role}\n", encoding="utf-8"
-            )
-        self._git("init")
-        self._git("config", "user.email", "tests@example.com")
-        self._git("config", "user.name", "Test User")
+            (self.prompts / f"{role}.md").write_text(f"ROLE:{role}\n", encoding="utf-8")
+        subprocess.run(["git", "init"], cwd=self.repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "tests@example.com"], cwd=self.repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=self.repo, check=True)
         (self.repo / "README.md").write_text("clean\n", encoding="utf-8")
-        self._git("add", "README.md")
-        self._git("commit", "-m", "initial")
-        self.runner = FakeRunner()
+        subprocess.run(["git", "add", "README.md"], cwd=self.repo, check=True)
+        subprocess.run(["git", "commit", "-m", "initial"], cwd=self.repo, check=True, capture_output=True)
+        self.state_file.write_text(json.dumps({
+            "workflow_id": "issue-17", "sessions": {}, "pending": None,
+            "task_review_clean_checkpoint": None, "review_certification": None,
+        }), encoding="utf-8")
 
-    def _git(self, *args):
-        return subprocess.run(
-            ["git", *args], cwd=self.repo, check=True, text=True, capture_output=True
-        )
-
-    def _prime_pending(self, *, clean):
-        checkpoint = "checkpoint-17"
-        self.state_file.write_text(
-            json.dumps(
-                {
-                    "workflow_id": "issue-17",
-                    "sessions": {},
-                    "pending_agent": "task_review",
-                    "pending_result_ready": True,
-                    "review_clean_head": None,
-                    "pending_task_review_checkpoint": checkpoint,
-                    "task_review_clean_checkpoint": checkpoint if clean else None,
-                }
-            ),
-            encoding="utf-8",
-        )
-        return checkpoint
-
-    def _invoke(self, *, comment_id=None):
+    def invoke(self, agent, result, task="external"):
+        runner = FakeRunner(codex_stdout("T17", "HERMES_RESULT=" + json.dumps(result)))
         return invoke_agent(
-            agent="coordinator",
-            workflow_id="issue-17",
-            repo=self.repo,
-            task="resume after Task Review",
-            state_file=self.state_file,
-            prompt_dir=self.prompts,
-            runner=self.runner,
-            completed_agent="task_review",
-            task_review_comment_id=comment_id,
+            agent=agent, workflow_id="issue-17", repo=self.repo, task=task,
+            state_file=self.state_file, prompt_dir=self.prompts, runner=runner,
         )
 
-    def _comment(self, checkpoint, verdict, issue=17):
-        return {
-            "issue_url": f"https://api.github.com/repos/example/repo/issues/{issue}",
-            "body": (
-                f"### Task Review — {verdict}\n\n"
-                f"Task checkpoint: `{checkpoint}`\n"
-                f"Verdict: `{verdict}`\n"
-            ),
-        }
-
-    def _state(self):
+    def state(self):
         return json.loads(self.state_file.read_text(encoding="utf-8"))
 
-    def _assert_pending_recoverable(self, checkpoint, *, clean):
-        state = self._state()
-        self.assertEqual(state["pending_agent"], "task_review")
-        self.assertTrue(state["pending_result_ready"])
-        self.assertEqual(state["pending_task_review_checkpoint"], checkpoint)
-        if clean:
-            self.assertEqual(state["task_review_clean_checkpoint"], checkpoint)
-        else:
-            self.assertIsNone(state["task_review_clean_checkpoint"])
+    def prime_task_review(self):
+        self.invoke("coordinator", HANDOFF_RESULT)
+        return self.state()["pending"]
 
-    def test_completed_task_review_returns_checkpoint_for_issue_comment(self):
-        task = "Review issue 17 audit requirement"
-        checkpoint = _task_review_checkpoint(task)
-        self.state_file.write_text(
-            json.dumps(
-                {
-                    "workflow_id": "issue-17",
-                    "sessions": {},
-                    "pending_agent": "task_review",
-                    "pending_result_ready": False,
-                    "review_clean_head": None,
-                    "pending_task_review_checkpoint": checkpoint,
-                    "task_review_clean_checkpoint": None,
-                }
-            ),
-            encoding="utf-8",
-        )
-        review_result = {
-            "status": "TASK_REVIEW_CLEAN",
-            "evidence_and_root_cause": "The missing audit trace is confirmed.",
-            "clearer_requirement": "Require a verified Issue comment before completion.",
-            "acceptance_criteria": "Completion fails closed without matching evidence.",
-            "simplest_approach": "Reuse the existing checkpoint and completion handshake.",
-        }
-
-        def task_review_runner(command, cwd, input_text):
-            payload = {
-                "type": "item.completed",
-                "item": {
-                    "type": "agent_message",
-                    "text": "HERMES_RESULT=" + json.dumps(review_result),
-                },
-            }
-            return subprocess.CompletedProcess(
-                command, 0, stdout=json.dumps(payload) + "\n", stderr=""
-            )
-
-        result = invoke_agent(
-            agent="task_review",
-            workflow_id="issue-17",
-            repo=self.repo,
-            task=task,
-            state_file=self.state_file,
-            prompt_dir=self.prompts,
-            runner=task_review_runner,
-        )
-
-        self.assertEqual(result["task_review_checkpoint"], checkpoint)
-
-    def test_clean_completion_requires_matching_issue_comment(self):
-        checkpoint = self._prime_pending(clean=True)
-        with patch(
-            "run_codex._fetch_issue_comment",
-            return_value=self._comment(checkpoint, "TASK_REVIEW_CLEAN"),
-        ):
-            result = self._invoke(comment_id=101)
-        self.assertEqual(result["status"], "AWAIT_USER_DECISION")
-        self.assertIsNone(self._state()["pending_agent"])
-
-    def test_changes_required_completion_requires_matching_issue_comment(self):
-        checkpoint = self._prime_pending(clean=False)
-        with patch(
-            "run_codex._fetch_issue_comment",
-            return_value=self._comment(checkpoint, "CHANGES_REQUIRED"),
-        ):
-            self._invoke(comment_id=102)
-        self.assertIsNone(self._state()["pending_agent"])
-
-    def test_missing_comment_id_fails_closed(self):
-        checkpoint = self._prime_pending(clean=True)
-        with self.assertRaises(InvalidAgentResult):
-            self._invoke()
-        self._assert_pending_recoverable(checkpoint, clean=True)
-
-    def test_nonexistent_comment_fails_closed(self):
-        checkpoint = self._prime_pending(clean=True)
-        with patch(
-            "run_codex._fetch_issue_comment",
-            side_effect=InvalidAgentResult("Task Review audit comment was not found"),
-        ):
+    def test_coordinator_handoff_is_not_accepted_when_trace_publish_fails(self):
+        before = self.state()
+        with patch("run_codex._publish_handoff_trace", side_effect=InvalidAgentResult("trace failed")):
             with self.assertRaises(InvalidAgentResult):
-                self._invoke(comment_id=103)
-        self._assert_pending_recoverable(checkpoint, clean=True)
+                self.invoke("coordinator", HANDOFF_RESULT)
+        self.assertEqual(self.state(), before)
 
-    def test_wrong_issue_fails_closed(self):
-        checkpoint = self._prime_pending(clean=True)
-        with patch(
-            "run_codex._fetch_issue_comment",
-            return_value=self._comment(checkpoint, "TASK_REVIEW_CLEAN", issue=18),
-        ):
-            with self.assertRaises(InvalidAgentResult):
-                self._invoke(comment_id=104)
-        self._assert_pending_recoverable(checkpoint, clean=True)
+    def test_clean_result_trace_carries_checkpoint_and_exact_result(self):
+        self.prime_task_review()
+        with patch("run_codex._publish_handoff_trace") as publish:
+            self.invoke("task_review", CLEAN_RESULT)
+        handoff = publish.call_args.args[2]
+        self.assertEqual(handoff["from"], "task_review")
+        self.assertEqual(handoff["to"], "coordinator")
+        self.assertEqual(handoff["payload"], CLEAN_RESULT)
+        self.assertTrue(publish.call_args.kwargs["task_checkpoint"])
 
-    def test_wrong_checkpoint_fails_closed(self):
-        checkpoint = self._prime_pending(clean=True)
-        with patch(
-            "run_codex._fetch_issue_comment",
-            return_value=self._comment("stale-checkpoint", "TASK_REVIEW_CLEAN"),
-        ):
-            with self.assertRaises(InvalidAgentResult):
-                self._invoke(comment_id=105)
-        self._assert_pending_recoverable(checkpoint, clean=True)
+    def test_changes_required_is_a_completed_traced_handoff(self):
+        self.prime_task_review()
+        with patch("run_codex._publish_handoff_trace") as publish:
+            self.invoke("task_review", CHANGES_RESULT)
+        self.assertEqual(self.state()["pending"]["payload"]["status"], "CHANGES_REQUIRED")
+        self.assertEqual(publish.call_args.args[2]["payload"], CHANGES_RESULT)
 
-    def test_wrong_verdict_fails_closed(self):
-        checkpoint = self._prime_pending(clean=True)
-        with patch(
-            "run_codex._fetch_issue_comment",
-            return_value=self._comment(checkpoint, "CHANGES_REQUIRED"),
-        ):
+    def test_specialist_result_is_not_accepted_when_trace_publish_fails(self):
+        original = self.prime_task_review()
+        with patch("run_codex._publish_handoff_trace", side_effect=InvalidAgentResult("trace failed")):
             with self.assertRaises(InvalidAgentResult):
-                self._invoke(comment_id=106)
-        self._assert_pending_recoverable(checkpoint, clean=True)
+                self.invoke("task_review", CLEAN_RESULT)
+        self.assertEqual(self.state()["pending"], original)
+        self.assertIsNone(self.state()["task_review_clean_checkpoint"])
 
 
 if __name__ == "__main__":

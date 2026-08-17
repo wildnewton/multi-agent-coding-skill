@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from run_codex import CodexInvocationError, invoke_agent
 
@@ -113,7 +114,6 @@ class ExecutorHandoffTests(unittest.TestCase):
 
     def test_coordinator_handoff_creates_single_pending_envelope(self):
         self.handoff_testing()
-
         state = self.state()
         self.assertEqual(
             state["pending"],
@@ -129,9 +129,7 @@ class ExecutorHandoffTests(unittest.TestCase):
     def test_specialist_invocation_uses_exact_pending_task(self):
         self.handoff_testing()
         testing = FakeRunner([codex_stdout("T21", TESTING_RESULT)])
-
         self.invoke("testing", testing, task="WRONG RECONSTRUCTED TASK")
-
         prompt = testing.calls[0][2]
         self.assertIn(TESTING_TASK, prompt)
         self.assertNotIn("WRONG RECONSTRUCTED TASK", prompt)
@@ -139,23 +137,16 @@ class ExecutorHandoffTests(unittest.TestCase):
     def test_specialist_completion_flips_pending_back_to_coordinator(self):
         self.handoff_testing()
         testing = FakeRunner([codex_stdout("T21", TESTING_RESULT)])
-
         self.invoke("testing", testing)
-
         self.assertEqual(
             self.state()["pending"],
-            {
-                "from": "testing",
-                "to": "coordinator",
-                "payload": TESTING_RESULT_DICT,
-            },
+            {"from": "testing", "to": "coordinator", "payload": TESTING_RESULT_DICT},
         )
 
     def test_coordinator_consumes_exact_specialist_result_without_completion_handshake(self):
         self.handoff_testing()
         testing = FakeRunner([codex_stdout("T21", TESTING_RESULT)])
         self.invoke("testing", testing)
-
         next_handoff = "HERMES_RESULT=" + json.dumps(
             {
                 "status": "HANDOFF",
@@ -166,7 +157,6 @@ class ExecutorHandoffTests(unittest.TestCase):
         )
         coordinator = FakeRunner([codex_stdout("C21", next_handoff)])
         self.invoke("coordinator", coordinator, task="WRONG MANUAL RESULT COPY")
-
         prompt = coordinator.calls[0][2]
         self.assertIn("RED_COMPLETE", prompt)
         self.assertIn(TESTING_RESULT_DICT["test_command"], prompt)
@@ -182,8 +172,103 @@ class ExecutorHandoffTests(unittest.TestCase):
 
         with self.assertRaises(CodexInvocationError):
             self.invoke("testing", timeout_runner)
-
         self.assertEqual(self.state()["pending"], before)
+
+    def test_task_review_uses_handoff_task_and_certifies_that_checkpoint(self):
+        handoff = "HERMES_RESULT=" + json.dumps(
+            {
+                "status": "HANDOFF",
+                "next_agent": "task_review",
+                "task": "Review exact task contract",
+                "reason": "Independent task review is required",
+            }
+        )
+        coordinator = FakeRunner([codex_stdout("C21", handoff)])
+        self.invoke("coordinator", coordinator, task="canonical issue")
+        review_result = {
+            "status": "TASK_REVIEW_CLEAN",
+            "evidence_and_root_cause": "confirmed",
+            "clearer_requirement": "clear",
+            "acceptance_criteria": "testable",
+            "simplest_approach": "minimal",
+        }
+        task_review = FakeRunner(
+            [codex_stdout("TR21", "HERMES_RESULT=" + json.dumps(review_result))]
+        )
+        self.invoke("task_review", task_review, task="WRONG EXTERNAL TASK")
+        prompt = task_review.calls[0][2]
+        self.assertIn("Review exact task contract", prompt)
+        self.assertIn("Independent task review is required", prompt)
+        self.assertNotIn("WRONG EXTERNAL TASK", prompt)
+        state = self.state()
+        self.assertIsNotNone(state["task_review_clean_checkpoint"])
+        self.assertEqual(state["pending"]["from"], "task_review")
+        self.assertEqual(state["pending"]["to"], "coordinator")
+
+    def test_user_decision_survives_restart_and_answer_is_delivered_to_coordinator(self):
+        decision = (
+            'HERMES_RESULT={"status":"AWAIT_USER_DECISION",'
+            '"question":"Preserve compatibility?"}'
+        )
+        first = FakeRunner([codex_stdout("C21", decision)])
+        self.invoke("coordinator", first, task="decide compatibility")
+        self.assertEqual(self.state()["pending"]["to"], "user")
+
+        handoff = "HERMES_RESULT=" + json.dumps(
+            {
+                "status": "HANDOFF",
+                "next_agent": "testing",
+                "task": "Add RED for compatibility",
+                "reason": "User chose compatibility",
+            }
+        )
+        resumed = FakeRunner([codex_stdout("C21", handoff)])
+        self.invoke("coordinator", resumed, task="Yes, preserve compatibility")
+        prompt = resumed.calls[0][2]
+        self.assertIn("Preserve compatibility?", prompt)
+        self.assertIn("Yes, preserve compatibility", prompt)
+        self.assertEqual(self.state()["pending"]["to"], "testing")
+
+    def test_review_certification_binds_pr_body_hash_and_stale_body_blocks_merge(self):
+        head = self._git("rev-parse", "HEAD").stdout.strip()
+        review_handoff = "HERMES_RESULT=" + json.dumps(
+            {
+                "status": "HANDOFF",
+                "next_agent": "review",
+                "task": "Review GREEN",
+                "reason": "GREEN complete",
+                "full_test_command": "python -m unittest",
+            }
+        )
+        coordinator = FakeRunner([codex_stdout("C21", review_handoff)])
+        self.invoke("coordinator", coordinator, task="route review")
+        review = FakeRunner([codex_stdout("R21", 'HERMES_RESULT={"status":"REVIEW_CLEAN"}')])
+        with patch("run_codex._current_pr_body_hash", return_value="body-v1"):
+            self.invoke("review", review)
+        self.assertEqual(
+            self.state()["review_certification"],
+            {"head": head, "pr_body_hash": "body-v1"},
+        )
+
+        merge_result = (
+            'HERMES_RESULT={"status":"AWAIT_USER_MERGE",'
+            f'"reviewed_head":"{head}","draft":false}}'
+        )
+        merge = FakeRunner([codex_stdout("C21", merge_result)])
+        with patch("run_codex._current_pr_body_hash", return_value="body-v2"):
+            with self.assertRaises(Exception):
+                self.invoke("coordinator", merge)
+
+    def test_formal_agent_handoffs_publish_trace_in_both_directions(self):
+        with patch("run_codex._publish_handoff_trace") as publish:
+            self.handoff_testing()
+            testing = FakeRunner([codex_stdout("T21", TESTING_RESULT)])
+            self.invoke("testing", testing)
+        self.assertEqual(publish.call_count, 2)
+        first = publish.call_args_list[0].args[2]
+        second = publish.call_args_list[1].args[2]
+        self.assertEqual((first["from"], first["to"]), ("coordinator", "testing"))
+        self.assertEqual((second["from"], second["to"]), ("testing", "coordinator"))
 
 
 if __name__ == "__main__":

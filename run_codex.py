@@ -653,8 +653,11 @@ def invoke_agent(
                 )
             if status == "AWAIT_USER_DECISION":
                 _require_nonempty_text(result, "question", "Coordinator AWAIT_USER_DECISION")
-                if not recovery_coordinator:
-                    state["pending"] = {"from": "coordinator", "to": "user", "payload": result}
+                if recovery_coordinator:
+                    raise InvalidAgentResult(
+                        "Coordinator recovery cannot await user decision while a specialist handoff is unresolved"
+                    )
+                state["pending"] = {"from": "coordinator", "to": "user", "payload": result}
             elif status == "AWAIT_USER_MERGE":
                 _require_nonempty_text(result, "reviewed_head", "Coordinator AWAIT_USER_MERGE")
                 if not state.get("task_review_clean_checkpoint"):
@@ -665,6 +668,11 @@ def invoke_agent(
                 if recovery_coordinator:
                     raise InvalidAgentResult(
                         "Coordinator AWAIT_USER_MERGE requires no unresolved specialist handoff"
+                    )
+                if _worktree_status(repo):
+                    _release_consumed_handoff(state_file, state, consumed_result_handoff)
+                    raise InvalidAgentResult(
+                        "Coordinator AWAIT_USER_MERGE requires a clean worktree"
                     )
                 certification = state.get("review_certification")
                 reviewed_head = result["reviewed_head"].strip()

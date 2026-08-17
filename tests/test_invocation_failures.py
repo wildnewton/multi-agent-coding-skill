@@ -126,7 +126,7 @@ class InvocationFailureTests(unittest.TestCase):
         seen = {}
         def runner(command, cwd, input_text, *, timeout_seconds):
             seen["timeout_seconds"] = timeout_seconds
-            return subprocess.CompletedProcess(command, 0, stdout=codex_stdout('HERMES_RESULT={"status":"RED_COMPLETE","test_command":"python -m unittest"}'), stderr="")
+            return subprocess.CompletedProcess(command, 0, stdout=codex_stdout('HERMES_RESULT={"status":"RED_COMPLETE","test_command":"false"}'), stderr="")
         rc, _, _ = self.run_main_with(runner, timeout="1234")
         self.assertEqual(rc, 0)
         self.assertEqual(seen["timeout_seconds"], 1234)

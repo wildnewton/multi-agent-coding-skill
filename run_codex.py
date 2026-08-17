@@ -46,11 +46,11 @@ TASK_REVIEW_FIELDS = (
     "simplest_approach",
 )
 GIT_OWNERSHIP_POLICY = """Repository state policy:
-- Hermes owns all git and GitHub mutations.
+- The orchestration layer owns git and GitHub mutations.
 - You may inspect repository state with read-only commands such as git status, git diff, git log, git show, git rev-parse, and read-only gh queries.
 - Do not run git add, commit, push, restore, checkout, reset, rebase, merge, clean, or other commands that mutate git state.
 - Do not mutate remote repository state through gh, gh api, or another API.
-- Leave permitted file edits unstaged in the shared working tree for Hermes to validate and commit.
+- Leave permitted file edits unstaged for the orchestration layer to validate and commit.
 """
 
 
@@ -99,8 +99,14 @@ def _load_state(path: Path, workflow_id: str) -> dict:
         )
     state.setdefault("workflow_id", workflow_id)
     state.setdefault("sessions", {})
+    if "pending" not in state and state.get("pending_agent") is not None:
+        raise ValueError("legacy unresolved specialist state cannot be migrated safely")
     state.setdefault("pending", None)
-    state.setdefault("review_certification", None)
+    if "review_certification" not in state:
+        legacy_head = state.get("review_clean_head")
+        state["review_certification"] = (
+            {"head": legacy_head, "pr_body_hash": None} if legacy_head else None
+        )
     state.setdefault("task_review_clean_checkpoint", None)
     for obsolete in (
         "pending_agent",
@@ -124,88 +130,6 @@ def _task_review_checkpoint(task: str) -> str:
 def _issue_number_from_workflow(workflow_id: str) -> int | None:
     match = re.fullmatch(r"issue-(\d+)", workflow_id)
     return int(match.group(1)) if match else None
-
-
-def _fetch_issue_comment(repo: Path, comment_id: int) -> dict:
-    env = os.environ.copy()
-    env.pop("GH_REPO", None)
-    env["GH_PROMPT_DISABLED"] = "1"
-    completed = subprocess.run(
-        ["gh", "api", f"repos/{{owner}}/{{repo}}/issues/comments/{comment_id}"],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=False,
-        env=env,
-    )
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "comment not found").strip()
-        raise InvalidAgentResult(
-            f"unable to verify Task Review audit comment {comment_id}: {detail}"
-        )
-    try:
-        comment = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        raise InvalidAgentResult(
-            "Task Review audit comment lookup did not return valid JSON"
-        ) from exc
-    if not isinstance(comment, dict):
-        raise InvalidAgentResult("Task Review audit comment lookup returned invalid data")
-    return comment
-
-
-def _verify_task_review_audit_comment(
-    *,
-    repo: Path,
-    workflow_id: str,
-    comment_id: int | None,
-    state: dict,
-) -> None:
-    issue_number = _issue_number_from_workflow(workflow_id)
-    if issue_number is None:
-        if comment_id is not None:
-            raise InvalidAgentResult(
-                "task_review_comment_id is only valid for issue-<number> workflows"
-            )
-        return
-
-    if comment_id is None:
-        raise InvalidAgentResult(
-            "issue-backed Task Review completion requires task_review_comment_id"
-        )
-
-    pending = state.get("pending")
-    payload = pending.get("payload") if isinstance(pending, dict) else None
-    task = payload.get("task") if isinstance(payload, dict) else None
-    if not isinstance(task, str) or not task.strip():
-        raise InvalidAgentResult("Task Review completion requires a pending task handoff")
-    checkpoint = _task_review_checkpoint(task)
-
-    expected_verdict = (
-        "TASK_REVIEW_CLEAN"
-        if state.get("task_review_clean_checkpoint") == checkpoint
-        else "CHANGES_REQUIRED"
-    )
-    comment = _fetch_issue_comment(repo, comment_id)
-    issue_url = comment.get("issue_url")
-    body = comment.get("body")
-
-    if not isinstance(issue_url, str) or not issue_url.rstrip("/").endswith(
-        f"/issues/{issue_number}"
-    ):
-        raise InvalidAgentResult(
-            f"Task Review audit comment does not belong to issue #{issue_number}"
-        )
-    if not isinstance(body, str):
-        raise InvalidAgentResult("Task Review audit comment has no text body")
-    if f"Task checkpoint: `{checkpoint}`" not in body:
-        raise InvalidAgentResult(
-            "Task Review audit comment does not identify the current task checkpoint"
-        )
-    if f"Verdict: `{expected_verdict}`" not in body:
-        raise InvalidAgentResult(
-            f"Task Review audit comment does not identify verdict {expected_verdict}"
-        )
 
 
 def _git(repo: Path, *args: str, allow_failure: bool = False) -> subprocess.CompletedProcess:
@@ -245,6 +169,146 @@ def _current_pr_head(repo: Path) -> str:
     return head
 
 
+def _has_origin(repo: Path) -> bool:
+    origin = _git(repo, "remote", "get-url", "origin", allow_failure=True)
+    return origin.returncode == 0 and bool(origin.stdout.strip())
+
+
+def _current_pr_number(repo: Path) -> int | None:
+    if not _has_origin(repo):
+        return None
+    env = os.environ.copy()
+    env["GH_PROMPT_DISABLED"] = "1"
+    completed = subprocess.run(
+        ["gh", "pr", "view", "--json", "number", "--jq", ".number"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    value = completed.stdout.strip()
+    if completed.returncode != 0 or not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _current_pr_body_hash(repo: Path) -> str | None:
+    if not _has_origin(repo):
+        return None
+    env = os.environ.copy()
+    env["GH_PROMPT_DISABLED"] = "1"
+    completed = subprocess.run(
+        ["gh", "pr", "view", "--json", "body", "--jq", ".body"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "no PR body returned").strip()
+        raise InvalidAgentResult(f"unable to read current PR description: {detail}")
+    return hashlib.sha256(completed.stdout.encode("utf-8")).hexdigest()
+
+
+def _publish_handoff_trace(
+    repo: Path,
+    workflow_id: str,
+    handoff: dict,
+    *,
+    head: str,
+    task_checkpoint: str | None = None,
+) -> None:
+    if not _has_origin(repo):
+        return
+    from_actor = handoff.get("from")
+    to_actor = handoff.get("to")
+    payload = handoff.get("payload")
+    if not isinstance(payload, dict):
+        raise InvalidAgentResult("handoff trace requires an object payload")
+
+    task_review_trace = "task_review" in {from_actor, to_actor}
+    pr_number = None if task_review_trace else _current_pr_number(repo)
+    issue_number = _issue_number_from_workflow(workflow_id)
+    if pr_number is None and issue_number is None:
+        return
+
+    lines = [
+        "### Workflow handoff",
+        "",
+        f"From: `{from_actor}`",
+        f"To: `{to_actor}`",
+        f"HEAD: `{head}`",
+    ]
+    if task_checkpoint:
+        lines.append(f"Task checkpoint: `{task_checkpoint}`")
+    lines.extend(
+        [
+            "",
+            "```json",
+            json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True),
+            "```",
+        ]
+    )
+    body = "\n".join(lines)
+    env = os.environ.copy()
+    env["GH_PROMPT_DISABLED"] = "1"
+    if pr_number is not None:
+        command = ["gh", "pr", "comment", str(pr_number), "--body", body]
+    else:
+        command = ["gh", "issue", "comment", str(issue_number), "--body", body]
+    completed = subprocess.run(
+        command, cwd=repo, text=True, capture_output=True, check=False, env=env
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "unable to publish trace").strip()
+        raise InvalidAgentResult(f"unable to publish workflow handoff trace: {detail}")
+
+
+def _publish_specialist_failure_trace(
+    repo: Path, workflow_id: str, pending: dict, *, head: str, reason: str
+) -> None:
+    if not _has_origin(repo):
+        return
+    pr_number = _current_pr_number(repo)
+    issue_number = _issue_number_from_workflow(workflow_id)
+    if pr_number is None and issue_number is None:
+        return
+    payload = pending.get("payload") if isinstance(pending, dict) else None
+    body = "\n".join(
+        [
+            "### Workflow specialist failure",
+            "",
+            f"Pending specialist: `{pending.get('to')}`",
+            f"HEAD: `{head}`",
+            f"Reason: {reason}",
+            "",
+            "Pending handoff remains unresolved.",
+            "",
+            "```json",
+            json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True),
+            "```",
+        ]
+    )
+    env = os.environ.copy()
+    env["GH_PROMPT_DISABLED"] = "1"
+    command = (
+        ["gh", "pr", "comment", str(pr_number), "--body", body]
+        if pr_number is not None
+        else ["gh", "issue", "comment", str(issue_number), "--body", body]
+    )
+    completed = subprocess.run(
+        command, cwd=repo, text=True, capture_output=True, check=False, env=env
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "unable to publish failure trace").strip()
+        raise InvalidAgentResult(f"unable to publish specialist failure trace: {detail}")
+
+
 def _worktree_status(repo: Path) -> list[str]:
     completed = _git(repo, "status", "--porcelain", "--untracked-files=all")
     return [line for line in completed.stdout.splitlines() if line.strip()]
@@ -253,7 +317,7 @@ def _worktree_status(repo: Path) -> list[str]:
 def _ensure_clean_worktree(repo: Path) -> None:
     if _worktree_status(repo):
         raise DirtyWorktreeError(
-            "agent invocation requires a clean worktree; Hermes must commit or "
+            "agent invocation requires a clean worktree; the orchestration layer must commit or "
             "discard the previous agent's changes first"
         )
 
@@ -305,11 +369,11 @@ def _verify_agent_did_not_mutate_repository(repo: Path, before: dict) -> None:
         or after["staged"]
     ):
         raise AgentRepositoryMutationError(
-            "local git state changed during agent invocation; Hermes exclusively owns git mutations"
+            "local git state changed during agent invocation; agents may not mutate git state"
         )
     if before["remote_checked"] and after["remote_head"] != before["remote_head"]:
         raise AgentRepositoryMutationError(
-            "remote branch changed during agent invocation; Hermes exclusively owns remote mutations"
+            "remote branch changed during agent invocation; agents may not mutate remote state"
         )
 
 
@@ -410,18 +474,11 @@ def invoke_agent(
     prompt_dir: str | Path,
     runner: Callable | None = None,
     timeout_seconds: int = DEFAULT_AGENT_TIMEOUT_SECONDS,
-    completed_agent: str | None = None,
-    task_review_comment_id: int | None = None,
 ) -> dict:
     if agent not in AGENTS:
         raise ValueError(f"unknown agent {agent!r}; expected one of {', '.join(AGENTS)}")
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
-    if completed_agent is not None or task_review_comment_id is not None:
-        raise InvalidAgentResult(
-            "specialist completion handshakes are obsolete; use the pending handoff lifecycle"
-        )
-
     repo = Path(repo).resolve()
     if not repo.is_dir():
         raise ValueError(f"repo is not a directory: {repo}")
@@ -458,14 +515,26 @@ def invoke_agent(
             raise InvalidAgentResult(
                 f"cannot invoke {agent!r}; pending handoff is not from coordinator"
             )
-        effective_task = _pending_payload_task(pending)
+        task_from_handoff = _pending_payload_task(pending)
+        effective_task = json.dumps(
+            pending["payload"], ensure_ascii=False, sort_keys=True
+        )
         if agent == "task_review":
-            task_review_checkpoint = _task_review_checkpoint(effective_task)
+            task_review_checkpoint = _task_review_checkpoint(task_from_handoff)
     elif agent == "coordinator" and isinstance(pending, dict) and pending.get("to") == "coordinator":
         payload = pending.get("payload")
         if not isinstance(payload, dict):
             raise InvalidAgentResult("Coordinator pending result payload must be an object")
         effective_task = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        consumed_result_handoff = True
+    elif agent == "coordinator" and isinstance(pending, dict) and pending.get("to") == "user":
+        if not isinstance(task, str) or not task.strip():
+            raise InvalidAgentResult("Coordinator resume from user requires a non-empty answer")
+        effective_task = json.dumps(
+            {"question": pending.get("payload"), "answer": task},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
         consumed_result_handoff = True
 
     pre_task_review_coordinator = (
@@ -507,6 +576,14 @@ def invoke_agent(
         _verify_agent_did_not_mutate_repository(repo, repository_guard)
         if read_only_context is not None:
             _ensure_read_only_worktree(repo, read_only_context)
+        if agent in specialists and isinstance(pending, dict):
+            _publish_specialist_failure_trace(
+                repo,
+                workflow_id,
+                pending,
+                head=repository_guard["head"],
+                reason=f"Codex timed out after {timeout_seconds} seconds",
+            )
         raise CodexInvocationError(
             f"Codex timed out after {timeout_seconds} seconds"
         ) from exc
@@ -516,6 +593,14 @@ def invoke_agent(
         _ensure_read_only_worktree(repo, read_only_context)
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
+        if agent in specialists and isinstance(pending, dict):
+            _publish_specialist_failure_trace(
+                repo,
+                workflow_id,
+                pending,
+                head=repository_guard["head"],
+                reason=f"Codex exited with status {completed.returncode}: {detail}",
+            )
         raise CodexInvocationError(
             f"Codex exited with status {completed.returncode}: {detail}"
         )
@@ -527,7 +612,7 @@ def invoke_agent(
 
     if "commit" in result:
         raise InvalidAgentResult(
-            "agents must not include commit; Hermes owns git commit creation"
+            "agents must not include commit; the orchestration layer owns git commit creation"
         )
 
     if agent in specialists and "next_agent" in result:
@@ -576,6 +661,18 @@ def invoke_agent(
                 "to": next_agent,
                 "payload": result,
             }
+            checkpoint = (
+                _task_review_checkpoint(result["task"])
+                if next_agent == "task_review"
+                else None
+            )
+            _publish_handoff_trace(
+                repo,
+                workflow_id,
+                state["pending"],
+                head=repository_guard["head"],
+                task_checkpoint=checkpoint,
+            )
         else:
             if "next_agent" in result:
                 raise InvalidAgentResult(
@@ -622,30 +719,68 @@ def invoke_agent(
                         "Coordinator AWAIT_USER_MERGE requires reviewed_head to match "
                         "the current HEAD certified by REVIEW_CLEAN"
                     )
+                current_body_hash = _current_pr_body_hash(repo)
+                certified_body_hash = certification.get("pr_body_hash")
+                if (
+                    certified_body_hash is not None
+                    and current_body_hash != certified_body_hash
+                ):
+                    raise InvalidAgentResult(
+                        "Coordinator AWAIT_USER_MERGE requires the current PR description "
+                        "to match REVIEW_CLEAN certification"
+                    )
                 state["pending"] = {
                     "from": "coordinator",
                     "to": "user",
                     "payload": result,
                 }
+                _publish_handoff_trace(
+                    repo, workflow_id, state["pending"], head=repository_guard["head"]
+                )
             elif status == "BLOCKED" and consumed_result_handoff:
                 state["pending"] = None
 
     elif agent == "testing":
         if status == "RED_COMPLETE":
             state["pending"] = _reverse_handoff(agent, result)
+            _publish_handoff_trace(
+                repo, workflow_id, state["pending"], head=repository_guard["head"]
+            )
+        elif status == "BLOCKED":
+            _publish_specialist_failure_trace(
+                repo, workflow_id, pending, head=repository_guard["head"], reason="BLOCKED"
+            )
     elif agent == "task_review":
         if status in {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED"}:
             state["pending"] = _reverse_handoff(agent, result)
             if status == "TASK_REVIEW_CLEAN":
                 state["task_review_clean_checkpoint"] = task_review_checkpoint
+            _publish_handoff_trace(
+                repo,
+                workflow_id,
+                state["pending"],
+                head=repository_guard["head"],
+                task_checkpoint=task_review_checkpoint,
+            )
+        elif status == "BLOCKED":
+            _publish_specialist_failure_trace(
+                repo, workflow_id, pending, head=repository_guard["head"], reason="BLOCKED"
+            )
     elif agent == "review":
         if status in {"REVIEW_CLEAN", "CHANGES_REQUIRED"}:
             state["pending"] = _reverse_handoff(agent, result)
             if status == "REVIEW_CLEAN":
                 state["review_certification"] = {
                     "head": repository_guard["head"],
-                    "pr_body_hash": None,
+                    "pr_body_hash": _current_pr_body_hash(repo),
                 }
+            _publish_handoff_trace(
+                repo, workflow_id, state["pending"], head=repository_guard["head"]
+            )
+        elif status == "BLOCKED":
+            _publish_specialist_failure_trace(
+                repo, workflow_id, pending, head=repository_guard["head"], reason="BLOCKED"
+            )
 
     if config["persistent"] and session_id is None:
         if not thread_id:
@@ -674,16 +809,6 @@ def main(argv=None) -> int:
         default=DEFAULT_AGENT_TIMEOUT_SECONDS,
         help=f"Codex subprocess timeout in seconds (default: {DEFAULT_AGENT_TIMEOUT_SECONDS})",
     )
-    parser.add_argument(
-        "--completed-agent",
-        choices=("testing", "task_review", "review"),
-        help="Deprecated; specialist results now return through the pending handoff.",
-    )
-    parser.add_argument(
-        "--task-review-comment-id",
-        type=int,
-        help="Deprecated with the specialist completion handshake.",
-    )
     args = parser.parse_args(argv)
 
     root = Path(__file__).resolve().parent
@@ -702,8 +827,6 @@ def main(argv=None) -> int:
             state_file=state_file,
             prompt_dir=prompt_dir,
             timeout_seconds=args.timeout_seconds,
-            completed_agent=args.completed_agent,
-            task_review_comment_id=args.task_review_comment_id,
         )
         if result.get("status") == "AWAIT_USER_MERGE":
             reviewed_head = result["reviewed_head"].strip()

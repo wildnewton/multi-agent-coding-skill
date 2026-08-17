@@ -259,6 +259,8 @@ def _publish_handoff_trace(
     task_review_trace = "task_review" in {from_actor, to_actor}
     pr_number = None if task_review_trace else _current_pr_number(repo)
     issue_number = _issue_number_from_workflow(workflow_id)
+    if task_review_trace and issue_number is None:
+        raise InvalidAgentResult("Task Review trace requires an issue-<number> workflow")
     if pr_number is None and issue_number is None:
         return
 
@@ -695,6 +697,10 @@ def invoke_agent(
         if agent == "task_review" and status in {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED"}:
             for field in TASK_REVIEW_FIELDS:
                 _require_nonempty_text(result, field, f"Task Review {status}")
+        if agent == "review" and status == "CHANGES_REQUIRED":
+            findings = result.get("findings")
+            if not isinstance(findings, list) or not findings:
+                raise InvalidAgentResult("Review CHANGES_REQUIRED must include non-empty findings")
     except InvalidAgentResult as exc:
         if agent in specialists and isinstance(pending, dict):
             _publish_specialist_failure_trace(

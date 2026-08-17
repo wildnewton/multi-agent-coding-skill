@@ -427,15 +427,34 @@ def _pending_payload_task(pending: dict) -> str:
     return task
 
 
-def _verify_red_command(repo: Path, test_command: str) -> None:
-    completed = subprocess.run(
-        test_command,
-        cwd=repo,
-        shell=True,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+def _verify_red_command(repo: Path, test_command: str, timeout_seconds: int) -> None:
+    before_guard = _capture_repository_guard(repo)
+    before_status = _worktree_status(repo)
+    try:
+        completed = subprocess.run(
+            test_command,
+            cwd=repo,
+            shell=True,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        _verify_agent_did_not_mutate_repository(repo, before_guard)
+        if _worktree_status(repo) != before_status:
+            raise AgentRepositoryMutationError(
+                "Testing RED verification command modified the worktree"
+            ) from exc
+        raise InvalidAgentResult(
+            f"Testing RED_COMPLETE test_command timed out after {timeout_seconds} seconds"
+        ) from exc
+
+    _verify_agent_did_not_mutate_repository(repo, before_guard)
+    if _worktree_status(repo) != before_status:
+        raise AgentRepositoryMutationError(
+            "Testing RED verification command modified the worktree"
+        )
     if completed.returncode == 0:
         raise InvalidAgentResult(
             "Testing RED_COMPLETE test_command must still fail before GREEN"
@@ -523,6 +542,29 @@ def invoke_agent(
             raise InvalidAgentResult("Coordinator pending result payload must be an object")
         effective_task = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         consumed_result_handoff = True
+
+    formal_pending_dispatch = (
+        isinstance(pending, dict)
+        and pending.get("to") == agent
+        and pending.get("from") != "user"
+    )
+    if formal_pending_dispatch:
+        trace_checkpoint = None
+        if pending.get("to") == "task_review":
+            trace_checkpoint = task_review_checkpoint
+        elif (
+            pending.get("from") == "task_review"
+            and isinstance(pending.get("payload"), dict)
+            and pending["payload"].get("status") == "TASK_REVIEW_CLEAN"
+        ):
+            trace_checkpoint = state.get("task_review_clean_checkpoint")
+        _publish_handoff_trace(
+            repo,
+            workflow_id,
+            pending,
+            head=repository_guard["head"],
+            task_checkpoint=trace_checkpoint,
+        )
 
     pre_task_review_coordinator = agent == "coordinator" and not state.get("task_review_clean_checkpoint")
     read_only_context = None
@@ -638,14 +680,6 @@ def invoke_agent(
                 state["review_certification"] = None
 
             state["pending"] = {"from": "coordinator", "to": next_agent, "payload": result}
-            checkpoint = _task_review_checkpoint(result["task"]) if next_agent == "task_review" else None
-            _publish_handoff_trace(
-                repo,
-                workflow_id,
-                state["pending"],
-                head=repository_guard["head"],
-                task_checkpoint=checkpoint,
-            )
         else:
             if "next_agent" in result:
                 raise InvalidAgentResult(
@@ -704,8 +738,8 @@ def invoke_agent(
     elif agent == "testing":
         if status == "RED_COMPLETE":
             try:
-                _verify_red_command(repo, result["test_command"])
-            except InvalidAgentResult as exc:
+                _verify_red_command(repo, result["test_command"], timeout_seconds)
+            except (InvalidAgentResult, AgentRepositoryMutationError) as exc:
                 _publish_specialist_failure_trace(
                     repo,
                     workflow_id,
@@ -715,7 +749,6 @@ def invoke_agent(
                 )
                 raise
             state["pending"] = _reverse_handoff(agent, result)
-            _publish_handoff_trace(repo, workflow_id, state["pending"], head=repository_guard["head"])
         elif status == "BLOCKED":
             summary = result.get("summary")
             reason = f"BLOCKED: {summary.strip()}" if isinstance(summary, str) and summary.strip() else "BLOCKED"
@@ -727,13 +760,6 @@ def invoke_agent(
             state["pending"] = _reverse_handoff(agent, result)
             if status == "TASK_REVIEW_CLEAN":
                 state["task_review_clean_checkpoint"] = task_review_checkpoint
-            _publish_handoff_trace(
-                repo,
-                workflow_id,
-                state["pending"],
-                head=repository_guard["head"],
-                task_checkpoint=task_review_checkpoint,
-            )
         elif status == "BLOCKED":
             summary = result.get("summary")
             reason = f"BLOCKED: {summary.strip()}" if isinstance(summary, str) and summary.strip() else "BLOCKED"
@@ -759,7 +785,6 @@ def invoke_agent(
                     "head": repository_guard["head"],
                     "pr_body_hash": pr_body_hash,
                 }
-            _publish_handoff_trace(repo, workflow_id, state["pending"], head=repository_guard["head"])
         elif status == "BLOCKED":
             summary = result.get("summary")
             reason = f"BLOCKED: {summary.strip()}" if isinstance(summary, str) and summary.strip() else "BLOCKED"

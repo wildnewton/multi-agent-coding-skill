@@ -89,24 +89,19 @@ def _load_state(path: Path, workflow_id: str) -> dict:
         raise ValueError(
             f"state file belongs to workflow {state.get('workflow_id')!r}, not {workflow_id!r}"
         )
-    state.setdefault("workflow_id", workflow_id)
-    state.setdefault("sessions", {})
-    if "pending" not in state and state.get("pending_agent") is not None:
-        raise ValueError("legacy unresolved specialist state cannot be migrated safely")
-    state.setdefault("pending", None)
-    if "review_certification" not in state:
-        legacy_head = state.get("review_clean_head")
-        state["review_certification"] = (
-            {"head": legacy_head, "pr_body_hash": None} if legacy_head else None
-        )
-    state.setdefault("task_review_clean_checkpoint", None)
-    for obsolete in (
+    legacy_keys = {
         "pending_agent",
         "pending_result_ready",
         "pending_task_review_checkpoint",
         "review_clean_head",
-    ):
-        state.pop(obsolete, None)
+    }
+    if legacy_keys.intersection(state):
+        raise ValueError("legacy workflow state is unsupported; start a new workflow")
+    state.setdefault("workflow_id", workflow_id)
+    state.setdefault("sessions", {})
+    state.setdefault("pending", None)
+    state.setdefault("review_certification", None)
+    state.setdefault("task_review_clean_checkpoint", None)
     return state
 
 
@@ -451,6 +446,12 @@ def _reverse_handoff(agent: str, result: dict) -> dict:
     return {"from": agent, "to": "coordinator", "payload": result}
 
 
+def _release_consumed_handoff(state_file: Path, state: dict, consumed: bool) -> None:
+    if consumed:
+        state["pending"] = None
+        _save_state(state_file, state)
+
+
 def invoke_agent(
     *,
     agent: str,
@@ -657,6 +658,7 @@ def invoke_agent(
             elif status == "AWAIT_USER_MERGE":
                 _require_nonempty_text(result, "reviewed_head", "Coordinator AWAIT_USER_MERGE")
                 if not state.get("task_review_clean_checkpoint"):
+                    _release_consumed_handoff(state_file, state, consumed_result_handoff)
                     raise InvalidAgentResult("Coordinator AWAIT_USER_MERGE requires TASK_REVIEW_CLEAN")
                 if result.get("draft") is not False:
                     raise InvalidAgentResult("Coordinator AWAIT_USER_MERGE must include draft=false")
@@ -669,20 +671,20 @@ def invoke_agent(
                 current_head = repository_guard["head"]
                 certified_head = certification.get("head") if isinstance(certification, dict) else None
                 if not certified_head or reviewed_head != certified_head or reviewed_head != current_head:
+                    _release_consumed_handoff(state_file, state, consumed_result_handoff)
                     raise InvalidAgentResult(
                         "Coordinator AWAIT_USER_MERGE requires reviewed_head to match the current HEAD certified by REVIEW_CLEAN"
                     )
                 current_body_hash = _current_pr_body_hash(repo)
                 certified_body_hash = certification.get("pr_body_hash")
-                if certified_body_hash is not None and current_body_hash != certified_body_hash:
+                if current_body_hash != certified_body_hash:
+                    _release_consumed_handoff(state_file, state, consumed_result_handoff)
                     raise InvalidAgentResult(
                         "Coordinator AWAIT_USER_MERGE requires the current PR description to match REVIEW_CLEAN certification"
                     )
                 current_pr_head = _current_pr_head(repo)
                 if current_pr_head != reviewed_head:
-                    if consumed_result_handoff:
-                        state["pending"] = None
-                        _save_state(state_file, state)
+                    _release_consumed_handoff(state_file, state, consumed_result_handoff)
                     raise MergePrHeadMismatch(reviewed_head, current_pr_head)
                 state["pending"] = {"from": "coordinator", "to": "user", "payload": result}
                 _publish_handoff_trace(

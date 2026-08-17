@@ -19,7 +19,10 @@ def codex_stdout(thread_id, final_message):
 class FakeRunner:
     def __init__(self, output):
         self.output = output
+        self.calls = []
+
     def __call__(self, command, cwd, input_text):
+        self.calls.append(input_text)
         return subprocess.CompletedProcess(command, 0, stdout=self.output, stderr="")
 
 
@@ -63,10 +66,11 @@ class TaskReviewAuditGateTests(unittest.TestCase):
 
     def invoke(self, agent, result, task="external"):
         runner = FakeRunner(codex_stdout("T17", "HERMES_RESULT=" + json.dumps(result)))
-        return invoke_agent(
+        value = invoke_agent(
             agent=agent, workflow_id="issue-17", repo=self.repo, task=task,
             state_file=self.state_file, prompt_dir=self.prompts, runner=runner,
         )
+        return value, runner
 
     def state(self):
         return json.loads(self.state_file.read_text(encoding="utf-8"))
@@ -75,37 +79,57 @@ class TaskReviewAuditGateTests(unittest.TestCase):
         self.invoke("coordinator", HANDOFF_RESULT)
         return self.state()["pending"]
 
-    def test_coordinator_handoff_is_not_accepted_when_trace_publish_fails(self):
-        before = self.state()
+    def test_coordinator_handoff_accepts_before_trace_dispatch(self):
+        with patch("run_codex._publish_handoff_trace") as publish:
+            self.invoke("coordinator", HANDOFF_RESULT)
+        publish.assert_not_called()
+        self.assertEqual(self.state()["pending"]["to"], "task_review")
+
+    def test_dispatch_trace_failure_blocks_task_review_without_consuming_pending(self):
+        original = self.prime_task_review()
+        runner = FakeRunner(codex_stdout("TR17", "HERMES_RESULT=" + json.dumps(CLEAN_RESULT)))
         with patch("run_codex._publish_handoff_trace", side_effect=InvalidAgentResult("trace failed")):
             with self.assertRaises(InvalidAgentResult):
-                self.invoke("coordinator", HANDOFF_RESULT)
-        self.assertEqual(self.state(), before)
+                invoke_agent(
+                    agent="task_review", workflow_id="issue-17", repo=self.repo, task="external",
+                    state_file=self.state_file, prompt_dir=self.prompts, runner=runner,
+                )
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(self.state()["pending"], original)
 
-    def test_clean_result_trace_carries_checkpoint_and_exact_result(self):
+    def test_clean_result_trace_carries_checkpoint_and_exact_result_at_coordinator_dispatch(self):
         self.prime_task_review()
+        self.invoke("task_review", CLEAN_RESULT)
         with patch("run_codex._publish_handoff_trace") as publish:
-            self.invoke("task_review", CLEAN_RESULT)
+            self.invoke("coordinator", {"status": "BLOCKED", "summary": "done"})
         handoff = publish.call_args.args[2]
         self.assertEqual(handoff["from"], "task_review")
         self.assertEqual(handoff["to"], "coordinator")
         self.assertEqual(handoff["payload"], CLEAN_RESULT)
         self.assertTrue(publish.call_args.kwargs["task_checkpoint"])
 
-    def test_changes_required_is_a_completed_traced_handoff(self):
+    def test_changes_required_is_traced_when_coordinator_is_dispatched(self):
         self.prime_task_review()
+        self.invoke("task_review", CHANGES_RESULT)
         with patch("run_codex._publish_handoff_trace") as publish:
-            self.invoke("task_review", CHANGES_RESULT)
-        self.assertEqual(self.state()["pending"]["payload"]["status"], "CHANGES_REQUIRED")
+            self.invoke("coordinator", {"status": "BLOCKED", "summary": "done"})
         self.assertEqual(publish.call_args.args[2]["payload"], CHANGES_RESULT)
+        self.assertIsNone(publish.call_args.kwargs["task_checkpoint"])
 
-    def test_specialist_result_is_not_accepted_when_trace_publish_fails(self):
-        original = self.prime_task_review()
+    def test_reverse_handoff_remains_accepted_when_dispatch_trace_fails(self):
+        self.prime_task_review()
+        self.invoke("task_review", CLEAN_RESULT)
+        accepted = self.state()["pending"]
+        runner = FakeRunner(codex_stdout("C17", 'HERMES_RESULT={"status":"BLOCKED","summary":"done"}'))
         with patch("run_codex._publish_handoff_trace", side_effect=InvalidAgentResult("trace failed")):
             with self.assertRaises(InvalidAgentResult):
-                self.invoke("task_review", CLEAN_RESULT)
-        self.assertEqual(self.state()["pending"], original)
-        self.assertIsNone(self.state()["task_review_clean_checkpoint"])
+                invoke_agent(
+                    agent="coordinator", workflow_id="issue-17", repo=self.repo, task="external",
+                    state_file=self.state_file, prompt_dir=self.prompts, runner=runner,
+                )
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(self.state()["pending"], accepted)
+        self.assertIsNotNone(self.state()["task_review_clean_checkpoint"])
 
 
 if __name__ == "__main__":

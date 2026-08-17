@@ -54,6 +54,15 @@ class AgentRepositoryMutationError(RuntimeError):
     """Raised when a Codex agent mutates git or remote repository state."""
 
 
+class MergePrHeadMismatch(InvalidAgentResult):
+    """Raised when merge readiness is stale against the actual GitHub PR HEAD."""
+
+    def __init__(self, reviewed_head: str, current_pr_head: str):
+        super().__init__("actual GitHub PR HEAD does not match reviewed_head")
+        self.reviewed_head = reviewed_head
+        self.current_pr_head = current_pr_head
+
+
 def _default_runner(command, cwd, input_text, *, timeout_seconds):
     return subprocess.run(
         command,
@@ -129,16 +138,21 @@ def _git(repo: Path, *args: str, allow_failure: bool = False) -> subprocess.Comp
     return completed
 
 
-def _current_pr_head(repo: Path) -> str:
+def _gh_env() -> dict:
     env = os.environ.copy()
+    env.pop("GH_REPO", None)
     env["GH_PROMPT_DISABLED"] = "1"
+    return env
+
+
+def _current_pr_head(repo: Path) -> str:
     completed = subprocess.run(
         ["gh", "pr", "view", "--json", "headRefOid", "--jq", ".headRefOid"],
         cwd=repo,
         text=True,
         capture_output=True,
         check=False,
-        env=env,
+        env=_gh_env(),
     )
     head = completed.stdout.strip()
     if completed.returncode != 0 or not head:
@@ -157,15 +171,13 @@ def _has_origin(repo: Path) -> bool:
 def _current_pr_number(repo: Path) -> int | None:
     if not _has_origin(repo):
         return None
-    env = os.environ.copy()
-    env["GH_PROMPT_DISABLED"] = "1"
     completed = subprocess.run(
         ["gh", "pr", "view", "--json", "number", "--jq", ".number"],
         cwd=repo,
         text=True,
         capture_output=True,
         check=False,
-        env=env,
+        env=_gh_env(),
     )
     value = completed.stdout.strip()
     if completed.returncode != 0 or not value:
@@ -179,15 +191,13 @@ def _current_pr_number(repo: Path) -> int | None:
 def _current_pr_body_hash(repo: Path) -> str | None:
     if not _has_origin(repo):
         return None
-    env = os.environ.copy()
-    env["GH_PROMPT_DISABLED"] = "1"
     completed = subprocess.run(
         ["gh", "pr", "view", "--json", "body", "--jq", ".body"],
         cwd=repo,
         text=True,
         capture_output=True,
         check=False,
-        env=env,
+        env=_gh_env(),
     )
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "no PR body returned").strip()
@@ -235,15 +245,13 @@ def _publish_handoff_trace(
         ]
     )
     body = "\n".join(lines)
-    env = os.environ.copy()
-    env["GH_PROMPT_DISABLED"] = "1"
     command = (
         ["gh", "pr", "comment", str(pr_number), "--body", body]
         if pr_number is not None
         else ["gh", "issue", "comment", str(issue_number), "--body", body]
     )
     completed = subprocess.run(
-        command, cwd=repo, text=True, capture_output=True, check=False, env=env
+        command, cwd=repo, text=True, capture_output=True, check=False, env=_gh_env()
     )
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "unable to publish trace").strip()
@@ -255,7 +263,8 @@ def _publish_specialist_failure_trace(
 ) -> None:
     if not _has_origin(repo):
         return
-    pr_number = _current_pr_number(repo)
+    task_review_trace = isinstance(pending, dict) and pending.get("to") == "task_review"
+    pr_number = None if task_review_trace else _current_pr_number(repo)
     issue_number = _issue_number_from_workflow(workflow_id)
     if pr_number is None and issue_number is None:
         return
@@ -275,15 +284,13 @@ def _publish_specialist_failure_trace(
             "```",
         ]
     )
-    env = os.environ.copy()
-    env["GH_PROMPT_DISABLED"] = "1"
     command = (
         ["gh", "pr", "comment", str(pr_number), "--body", body]
         if pr_number is not None
         else ["gh", "issue", "comment", str(issue_number), "--body", body]
     )
     completed = subprocess.run(
-        command, cwd=repo, text=True, capture_output=True, check=False, env=env
+        command, cwd=repo, text=True, capture_output=True, check=False, env=_gh_env()
     )
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "unable to publish failure trace").strip()
@@ -480,6 +487,17 @@ def invoke_agent(
         and pending.get("to") in specialists
     )
 
+    if agent == "coordinator" and isinstance(pending, dict) and pending.get("to") == "user":
+        if not isinstance(task, str) or not task.strip():
+            raise InvalidAgentResult("Coordinator resume from user requires a non-empty answer")
+        state["pending"] = {
+            "from": "user",
+            "to": "coordinator",
+            "payload": {"question": pending.get("payload"), "answer": task},
+        }
+        _save_state(state_file, state)
+        pending = state["pending"]
+
     effective_task = task
     consumed_result_handoff = False
     task_review_checkpoint = None
@@ -503,15 +521,6 @@ def invoke_agent(
         if not isinstance(payload, dict):
             raise InvalidAgentResult("Coordinator pending result payload must be an object")
         effective_task = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        consumed_result_handoff = True
-    elif agent == "coordinator" and isinstance(pending, dict) and pending.get("to") == "user":
-        if not isinstance(task, str) or not task.strip():
-            raise InvalidAgentResult("Coordinator resume from user requires a non-empty answer")
-        effective_task = json.dumps(
-            {"question": pending.get("payload"), "answer": task},
-            ensure_ascii=False,
-            sort_keys=True,
-        )
         consumed_result_handoff = True
 
     pre_task_review_coordinator = agent == "coordinator" and not state.get("task_review_clean_checkpoint")
@@ -658,6 +667,12 @@ def invoke_agent(
                     raise InvalidAgentResult(
                         "Coordinator AWAIT_USER_MERGE requires the current PR description to match REVIEW_CLEAN certification"
                     )
+                current_pr_head = _current_pr_head(repo)
+                if current_pr_head != reviewed_head:
+                    if consumed_result_handoff:
+                        state["pending"] = None
+                        _save_state(state_file, state)
+                    raise MergePrHeadMismatch(reviewed_head, current_pr_head)
                 state["pending"] = {"from": "coordinator", "to": "user", "payload": result}
                 _publish_handoff_trace(
                     repo, workflow_id, state["pending"], head=repository_guard["head"]
@@ -671,8 +686,10 @@ def invoke_agent(
             state["pending"] = _reverse_handoff(agent, result)
             _publish_handoff_trace(repo, workflow_id, state["pending"], head=repository_guard["head"])
         elif status == "BLOCKED":
+            summary = result.get("summary")
+            reason = f"BLOCKED: {summary.strip()}" if isinstance(summary, str) and summary.strip() else "BLOCKED"
             _publish_specialist_failure_trace(
-                repo, workflow_id, pending, head=repository_guard["head"], reason="BLOCKED"
+                repo, workflow_id, pending, head=repository_guard["head"], reason=reason
             )
     elif agent == "task_review":
         if status in {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED"}:
@@ -687,8 +704,10 @@ def invoke_agent(
                 task_checkpoint=task_review_checkpoint,
             )
         elif status == "BLOCKED":
+            summary = result.get("summary")
+            reason = f"BLOCKED: {summary.strip()}" if isinstance(summary, str) and summary.strip() else "BLOCKED"
             _publish_specialist_failure_trace(
-                repo, workflow_id, pending, head=repository_guard["head"], reason="BLOCKED"
+                repo, workflow_id, pending, head=repository_guard["head"], reason=reason
             )
     elif agent == "review":
         if status in {"REVIEW_CLEAN", "CHANGES_REQUIRED"}:
@@ -700,8 +719,10 @@ def invoke_agent(
                 }
             _publish_handoff_trace(repo, workflow_id, state["pending"], head=repository_guard["head"])
         elif status == "BLOCKED":
+            summary = result.get("summary")
+            reason = f"BLOCKED: {summary.strip()}" if isinstance(summary, str) and summary.strip() else "BLOCKED"
             _publish_specialist_failure_trace(
-                repo, workflow_id, pending, head=repository_guard["head"], reason="BLOCKED"
+                repo, workflow_id, pending, head=repository_guard["head"], reason=reason
             )
 
     if config["persistent"] and session_id is None:
@@ -750,19 +771,16 @@ def main(argv=None) -> int:
             prompt_dir=prompt_dir,
             timeout_seconds=args.timeout_seconds,
         )
-        if result.get("status") == "AWAIT_USER_MERGE":
-            reviewed_head = result["reviewed_head"].strip()
-            current_pr_head = _current_pr_head(repo)
-            if current_pr_head != reviewed_head:
-                error = {
-                    "status": "ERROR",
-                    "error_code": "MERGE_PR_HEAD_MISMATCH",
-                    "error": "actual GitHub PR HEAD does not match reviewed_head",
-                    "reviewed_head": reviewed_head,
-                    "current_pr_head": current_pr_head,
-                }
-                print(json.dumps(error), file=sys.stderr)
-                return 2
+    except MergePrHeadMismatch as exc:
+        error = {
+            "status": "ERROR",
+            "error_code": "MERGE_PR_HEAD_MISMATCH",
+            "error": str(exc),
+            "reviewed_head": exc.reviewed_head,
+            "current_pr_head": exc.current_pr_head,
+        }
+        print(json.dumps(error), file=sys.stderr)
+        return 2
     except Exception as exc:
         error = {"status": "ERROR", "error": str(exc)}
         if isinstance(exc, (CodexInvocationError, InvalidAgentResult, AgentRepositoryMutationError)):

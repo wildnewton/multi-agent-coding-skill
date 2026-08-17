@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from run_codex import CodexInvocationError, invoke_agent
+from run_codex import CodexInvocationError, MergePrHeadMismatch, invoke_agent
 
 
 TESTING_TASK = "Add focused RED coverage for issue 21"
@@ -205,7 +205,7 @@ class ExecutorHandoffTests(unittest.TestCase):
         self.assertEqual(state["pending"]["from"], "task_review")
         self.assertEqual(state["pending"]["to"], "coordinator")
 
-    def test_user_decision_survives_restart_and_answer_is_delivered_to_coordinator(self):
+    def test_user_answer_is_persisted_before_coordinator_runs_and_survives_retry(self):
         decision = (
             'HERMES_RESULT={"status":"AWAIT_USER_DECISION",'
             '"question":"Preserve compatibility?"}'
@@ -213,6 +213,31 @@ class ExecutorHandoffTests(unittest.TestCase):
         first = FakeRunner([codex_stdout("C21", decision)])
         self.invoke("coordinator", first, task="decide compatibility")
         self.assertEqual(self.state()["pending"]["to"], "user")
+
+        def timeout_runner(command, cwd, input_text):
+            raise subprocess.TimeoutExpired(command, 10)
+
+        with self.assertRaises(CodexInvocationError):
+            self.invoke(
+                "coordinator",
+                timeout_runner,
+                task="Yes, preserve compatibility",
+            )
+
+        self.assertEqual(
+            self.state()["pending"],
+            {
+                "from": "user",
+                "to": "coordinator",
+                "payload": {
+                    "question": {
+                        "status": "AWAIT_USER_DECISION",
+                        "question": "Preserve compatibility?",
+                    },
+                    "answer": "Yes, preserve compatibility",
+                },
+            },
+        )
 
         handoff = "HERMES_RESULT=" + json.dumps(
             {
@@ -223,10 +248,11 @@ class ExecutorHandoffTests(unittest.TestCase):
             }
         )
         resumed = FakeRunner([codex_stdout("C21", handoff)])
-        self.invoke("coordinator", resumed, task="Yes, preserve compatibility")
+        self.invoke("coordinator", resumed, task="WRONG RECONSTRUCTED ANSWER")
         prompt = resumed.calls[0][2]
         self.assertIn("Preserve compatibility?", prompt)
         self.assertIn("Yes, preserve compatibility", prompt)
+        self.assertNotIn("WRONG RECONSTRUCTED ANSWER", prompt)
         self.assertEqual(self.state()["pending"]["to"], "testing")
 
     def test_review_certification_binds_pr_body_hash_and_stale_body_blocks_merge(self):
@@ -258,6 +284,65 @@ class ExecutorHandoffTests(unittest.TestCase):
         with patch("run_codex._current_pr_body_hash", return_value="body-v2"):
             with self.assertRaises(Exception):
                 self.invoke("coordinator", merge)
+
+    def test_pr_head_mismatch_does_not_publish_or_persist_merge_readiness(self):
+        head = self._git("rev-parse", "HEAD").stdout.strip()
+        review_handoff = "HERMES_RESULT=" + json.dumps(
+            {
+                "status": "HANDOFF",
+                "next_agent": "review",
+                "task": "Review GREEN",
+                "reason": "GREEN complete",
+                "full_test_command": "python -m unittest",
+            }
+        )
+        self.invoke(
+            "coordinator",
+            FakeRunner([codex_stdout("C21", review_handoff)]),
+            task="route review",
+        )
+        with patch("run_codex._current_pr_body_hash", return_value="body-v1"):
+            self.invoke(
+                "review",
+                FakeRunner([codex_stdout("R21", 'HERMES_RESULT={"status":"REVIEW_CLEAN"}')]),
+            )
+
+        merge_result = (
+            'HERMES_RESULT={"status":"AWAIT_USER_MERGE",'
+            f'"reviewed_head":"{head}","draft":false}}'
+        )
+        with (
+            patch("run_codex._current_pr_body_hash", return_value="body-v1"),
+            patch("run_codex._current_pr_head", return_value="moved-head"),
+            patch("run_codex._publish_handoff_trace") as publish,
+        ):
+            with self.assertRaises(MergePrHeadMismatch):
+                self.invoke(
+                    "coordinator",
+                    FakeRunner([codex_stdout("C21", merge_result)]),
+                )
+
+        self.assertIsNone(self.state()["pending"])
+        publish.assert_not_called()
+
+    def test_task_review_blocked_trace_keeps_summary(self):
+        handoff = "HERMES_RESULT=" + json.dumps(
+            {
+                "status": "HANDOFF",
+                "next_agent": "task_review",
+                "task": "Review task",
+                "reason": "Need independent review",
+            }
+        )
+        self.invoke(
+            "coordinator",
+            FakeRunner([codex_stdout("C21", handoff)]),
+            task="canonical issue",
+        )
+        blocked = 'HERMES_RESULT={"status":"BLOCKED","summary":"Missing repository evidence"}'
+        with patch("run_codex._publish_specialist_failure_trace") as publish:
+            self.invoke("task_review", FakeRunner([codex_stdout("TR21", blocked)]))
+        self.assertEqual(publish.call_args.kwargs["reason"], "BLOCKED: Missing repository evidence")
 
     def test_formal_agent_handoffs_publish_trace_in_both_directions(self):
         with patch("run_codex._publish_handoff_trace") as publish:

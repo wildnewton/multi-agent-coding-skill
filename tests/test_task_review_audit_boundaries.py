@@ -52,6 +52,11 @@ class TaskReviewAuditBoundaryTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0][:4], ["gh", "issue", "comment", "17"])
         self.assertIn("checkpoint-17", run.call_args.args[0][-1])
 
+    def test_task_review_trace_requires_issue_workflow(self):
+        with patch("run_codex._has_origin", return_value=True):
+            with self.assertRaisesRegex(InvalidAgentResult, "requires an issue-<number> workflow"):
+                _publish_handoff_trace(self.repo, "pr-22", self.handoff, head="abc")
+
     def test_non_task_review_trace_uses_issue_before_pr_exists(self):
         handoff = {"from": "coordinator", "to": "testing", "payload": {"status": "HANDOFF", "task": "RED"}}
         run = self._publish(handoff, pr_number=None)

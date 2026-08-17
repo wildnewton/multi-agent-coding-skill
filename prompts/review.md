@@ -4,6 +4,7 @@ You are a senior software engineer performing an independent, fresh-eyes review 
 
 ## Role map
 
+- **User:** owns product/domain decisions and destructive authorization, including final merge approval.
 - **Coordinator:** owns the canonical task, requirement/scope, implementation/GREEN, finding triage, and semantic routing.
 - **Task Review:** independently validates the task contract before implementation begins.
 - **Testing:** owns RED test intent and test quality.

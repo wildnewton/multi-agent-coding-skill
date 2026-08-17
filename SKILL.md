@@ -66,7 +66,7 @@ Every formal agent-to-agent transition follows the same three steps:
 2. **BRIDGE — Executor -> Hermes**  
    Control returns to Hermes. Hermes performs only the git/GitHub mechanics needed before the next role: commit/push, targeted/full tests, CI, Draft PR creation/update, or PR metadata. If none are needed, this is a no-op.
 3. **DISPATCH — Hermes -> Executor -> To Agent**  
-   Hermes invokes the pending receiver. Executor re-checks the legal receiver and clean dispatch state, publishes the formal handoff trace using the actual dispatch HEAD/location, then invokes the To Agent from the exact `pending.payload`.
+   Hermes invokes the pending receiver. Executor re-checks the legal receiver and clean dispatch state, and once implementation is in PR phase also requires the PR to exist with actual PR HEAD equal to local HEAD. It then publishes the formal handoff trace using the actual dispatch HEAD/location and invokes the To Agent from the exact `pending.payload`.
 
 This cycle uses the existing single `pending`; do not add a phase flag, bridge-complete flag, handoff ID, or second pending object.
 
@@ -75,7 +75,7 @@ After Task Review is clean, do **not** create an empty commit merely to open a P
 ## Workflow
 
 1. **Coordinator -> Task Review -> Coordinator**  
-   Start from the user request and decisive repository evidence. Executor accepts Coordinator's Task Review handoff, then dispatches fresh Task Review from the exact pending payload. Task Review results are accepted back into `Task Review -> Coordinator` and dispatched to Coordinator. Repeat `CHANGES_REQUIRED` iterations until clean. No implementation/test edits are allowed before clean Task Review.
+   Start from the user request and decisive repository evidence. Executor accepts Coordinator's Task Review handoff, then dispatches fresh Task Review from the exact pending payload. Task Review results are accepted back into `Task Review -> Coordinator` with the Executor-computed reviewed-task checkpoint and dispatched to Coordinator. Repeat `CHANGES_REQUIRED` iterations until clean. No implementation/test edits are allowed before clean Task Review.
 
 2. **Coordinator -> Testing -> Coordinator**  
    For executable behavior needing new/corrected test intent, Executor accepts Coordinator's Testing handoff and dispatches Testing. Testing owns test/fixture/helper edits; Executor mechanically verifies RED before accepting `Testing -> Coordinator`. Hermes then commits/pushes RED and, if this is the first real implementation commit, opens the Draft PR before Executor dispatches Coordinator. The initial `Coordinator -> Testing` trace may therefore be on the Issue; `Testing -> Coordinator` and later implementation traces are on the PR.
@@ -87,7 +87,7 @@ After Task Review is clean, do **not** create an empty commit merely to open a P
    On `AWAIT_USER_DECISION`, Hermes asks the user and passes the exact answer back. The Executor persists `User -> Coordinator` before resuming Coordinator so retry reuses the accepted answer. This path is only available when no specialist handoff remains unresolved.
 
 5. **Merge approval**  
-   `AWAIT_USER_MERGE` is valid only after semantic readiness. The Executor mechanically requires a clean worktree, valid Task Review/Review certifications, no unresolved specialist ownership, current local/PR HEAD consistency, and unchanged reviewed PR description. Before asking the user, Hermes confirms remaining tests/CI/external gates, marks a Draft PR ready if needed, and verifies GitHub reports `draft=false`. On explicit approval, Hermes merges with `reviewed_head` as the atomic expected-HEAD precondition; if the PR HEAD moved, do not merge and return the current PR HEAD plus mismatch evidence to Coordinator.
+   After `REVIEW_CLEAN` is accepted and before Executor dispatches `Review -> Coordinator`, Hermes finishes remaining tests/CI/external gates, marks the Draft PR ready if appropriate, and verifies GitHub reports `draft=false`. Coordinator then makes the final semantic merge-readiness judgment. On `AWAIT_USER_MERGE`, Executor mechanically re-checks a clean worktree, valid Task Review/Review certifications, no unresolved specialist ownership, current local/PR HEAD consistency, unchanged reviewed PR description, and actual GitHub `draft=false` before creating `Coordinator -> User`. On explicit approval, Hermes merges with `reviewed_head` as the atomic expected-HEAD precondition; if the PR HEAD moved, do not merge and return the current PR HEAD plus mismatch evidence to Coordinator.
 
 Capability-isolating raw git/GitHub privileges behind the Executor is outside this MVP.
 
@@ -96,7 +96,7 @@ Capability-isolating raw git/GitHub privileges behind the Executor is outside th
 - `ERROR` is not an agent result; never reinterpret partial output as accepted work.
 - Do not commit reported `unverified_artifacts`.
 - Specialist failure leaves its pending ownership unresolved. Before recovery, Hermes discards/restores failed or `BLOCKED` invocation leftovers, then gives decisive failure evidence to read-only Coordinator rather than doing specialist work itself.
-- Dispatch-trace failure leaves the accepted pending handoff in place and prevents the To Agent from running; retry the dispatch rather than reconstructing the handoff.
+- Dispatch-trace or dispatch-bridge failure leaves the accepted pending handoff in place and prevents the To Agent from running; complete/fix the bridge and retry dispatch rather than reconstructing the handoff.
 - Report unrecoverable Coordinator failure to the user.
 
 ## Verification

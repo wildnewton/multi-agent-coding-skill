@@ -126,6 +126,23 @@ class ExecutorHandoffTests(unittest.TestCase):
         self.assertNotIn("pending_agent", state)
         self.assertNotIn("pending_result_ready", state)
 
+    def test_handoff_acceptance_does_not_publish_before_dispatch(self):
+        with patch("run_codex._publish_handoff_trace") as publish:
+            self.handoff_testing()
+        publish.assert_not_called()
+
+    def test_dispatch_trace_uses_post_bridge_head(self):
+        self.handoff_testing()
+        self._git("commit", "--allow-empty", "-m", "Hermes bridge commit")
+        bridged_head = self._git("rev-parse", "HEAD").stdout.strip()
+        testing = FakeRunner([codex_stdout("T21", TESTING_RESULT)])
+        with patch("run_codex._publish_handoff_trace") as publish:
+            self.invoke("testing", testing)
+        self.assertEqual(publish.call_count, 1)
+        self.assertEqual(publish.call_args.args[2]["from"], "coordinator")
+        self.assertEqual(publish.call_args.args[2]["to"], "testing")
+        self.assertEqual(publish.call_args.kwargs["head"], bridged_head)
+
     def test_specialist_invocation_uses_exact_pending_task(self):
         self.handoff_testing()
         testing = FakeRunner([codex_stdout("T21", TESTING_RESULT)])
@@ -285,7 +302,7 @@ class ExecutorHandoffTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 self.invoke("coordinator", merge)
 
-    def test_pr_head_mismatch_does_not_publish_or_persist_merge_readiness(self):
+    def test_pr_head_mismatch_does_not_publish_merge_readiness(self):
         head = self._git("rev-parse", "HEAD").stdout.strip()
         review_handoff = "HERMES_RESULT=" + json.dumps(
             {
@@ -323,7 +340,9 @@ class ExecutorHandoffTests(unittest.TestCase):
                 )
 
         self.assertIsNone(self.state()["pending"])
-        publish.assert_not_called()
+        self.assertEqual(publish.call_count, 1)
+        reverse = publish.call_args.args[2]
+        self.assertEqual((reverse["from"], reverse["to"]), ("review", "coordinator"))
 
     def test_task_review_blocked_trace_keeps_summary(self):
         handoff = "HERMES_RESULT=" + json.dumps(
@@ -344,11 +363,14 @@ class ExecutorHandoffTests(unittest.TestCase):
             self.invoke("task_review", FakeRunner([codex_stdout("TR21", blocked)]))
         self.assertEqual(publish.call_args.kwargs["reason"], "BLOCKED: Missing repository evidence")
 
-    def test_formal_agent_handoffs_publish_trace_in_both_directions(self):
+    def test_formal_agent_handoffs_publish_trace_when_receiver_is_dispatched(self):
+        blocked = 'HERMES_RESULT={"status":"BLOCKED","summary":"stop after result"}'
         with patch("run_codex._publish_handoff_trace") as publish:
             self.handoff_testing()
             testing = FakeRunner([codex_stdout("T21", TESTING_RESULT)])
             self.invoke("testing", testing)
+            coordinator = FakeRunner([codex_stdout("C21", blocked)])
+            self.invoke("coordinator", coordinator)
         self.assertEqual(publish.call_count, 2)
         first = publish.call_args_list[0].args[2]
         second = publish.call_args_list[1].args[2]

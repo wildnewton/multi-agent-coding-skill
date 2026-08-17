@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from run_codex import InvalidAgentResult, invoke_agent
 
@@ -87,15 +88,20 @@ class GitOwnershipContractTests(unittest.TestCase):
         )
 
     def invoke_with_runner(self, agent, runner):
-        return invoke_agent(
-            agent=agent,
-            workflow_id="issue-137",
-            repo=self.repo,
-            task="do the task",
-            state_file=self.state_file,
-            prompt_dir=self.prompts,
-            runner=runner,
-        )
+        with (
+            patch("run_codex._publish_handoff_trace"),
+            patch("run_codex._publish_specialist_failure_trace"),
+            patch("run_codex._current_pr_body_hash", return_value=None),
+        ):
+            return invoke_agent(
+                agent=agent,
+                workflow_id="issue-137",
+                repo=self.repo,
+                task="do the task",
+                state_file=self.state_file,
+                prompt_dir=self.prompts,
+                runner=runner,
+            )
 
     def invoke(self, agent, output):
         runner = FakeRunner(codex_stdout(f"{agent}-thread", output))

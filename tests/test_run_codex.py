@@ -35,6 +35,15 @@ TESTING_RESULT = 'HERMES_RESULT={"status":"RED_COMPLETE","test_command":"false",
 REVIEW_RESULT = 'HERMES_RESULT={"status":"REVIEW_CLEAN"}'
 TESTING_HANDOFF = 'HERMES_RESULT={"status":"HANDOFF","next_agent":"testing","task":"Add RED","reason":"Need RED"}'
 REVIEW_HANDOFF = 'HERMES_RESULT={"status":"HANDOFF","next_agent":"review","task":"Review GREEN","reason":"GREEN ready","full_test_command":"python -m unittest"}'
+TASK_REVIEW_HANDOFF = 'HERMES_RESULT={"status":"HANDOFF","next_agent":"task_review","task":"Verify the task","reason":"Need independent validation"}'
+TASK_REVIEW_CHANGES = (
+    'HERMES_RESULT={"status":"CHANGES_REQUIRED",'
+    '"evidence_and_root_cause":"The reported issue no longer exists.",'
+    '"clearer_requirement":"Do not implement a redundant fix.",'
+    '"acceptance_criteria":"Finish with verified no-change evidence.",'
+    '"simplest_approach":"Return the finding without implementation."}'
+)
+COMPLETED_RESULT = 'HERMES_RESULT={"status":"COMPLETED","report":"No implementation is required."}'
 
 
 class InvokeAgentTests(unittest.TestCase):
@@ -155,6 +164,58 @@ class InvokeAgentTests(unittest.TestCase):
         runner = FakeRunner([codex_stdout("C", 'HERMES_RESULT={"status":"AWAIT_USER_DECISION"}')])
         with self.assertRaises(InvalidAgentResult):
             self.invoke("coordinator", runner)
+
+    def test_completed_requires_report(self):
+        self.write_state(clean=None)
+        with self.assertRaisesRegex(InvalidAgentResult, "non-empty report"):
+            self.invoke("coordinator", FakeRunner([codex_stdout("C", 'HERMES_RESULT={"status":"COMPLETED"}')]))
+
+    def test_direct_completed_clears_pending(self):
+        self.write_state(clean=None)
+        result = self.invoke("coordinator", FakeRunner([codex_stdout("C", COMPLETED_RESULT)]))
+        self.assertEqual(result["status"], "COMPLETED")
+        self.assertIsNone(self.state()["pending"])
+
+    def test_user_decision_can_resume_to_completed(self):
+        self.write_state(clean=None)
+        self.invoke(
+            "coordinator",
+            FakeRunner([codex_stdout("C", 'HERMES_RESULT={"status":"AWAIT_USER_DECISION","question":"Accept evidence?"}')]),
+        )
+        result = self.invoke(
+            "coordinator",
+            FakeRunner([codex_stdout("C", COMPLETED_RESULT)]),
+            task="Accept the evidence",
+        )
+        self.assertEqual(result["status"], "COMPLETED")
+        self.assertIsNone(self.state()["pending"])
+
+    def test_task_review_changes_required_can_resume_to_completed(self):
+        self.write_state(clean=None)
+        self.invoke("coordinator", FakeRunner([codex_stdout("C", TASK_REVIEW_HANDOFF)]))
+        self.invoke("task_review", FakeRunner([codex_stdout("TR", TASK_REVIEW_CHANGES)]))
+        self.assertIsNone(self.state()["task_review_clean_checkpoint"])
+
+        result = self.invoke("coordinator", FakeRunner([codex_stdout("C", COMPLETED_RESULT)]))
+        self.assertEqual(result["status"], "COMPLETED")
+        self.assertIsNone(self.state()["pending"])
+
+    def test_unresolved_specialist_blocks_completed(self):
+        self.write_state(clean=None)
+        self.invoke("coordinator", FakeRunner([codex_stdout("C", TASK_REVIEW_HANDOFF)]))
+        with self.assertRaisesRegex(InvalidAgentResult, "unresolved specialist"):
+            self.invoke("coordinator", FakeRunner([codex_stdout("C", COMPLETED_RESULT)]), task="recovery")
+
+    def test_task_review_clean_blocks_completed(self):
+        self.write_state(clean="approved")
+        with self.assertRaisesRegex(InvalidAgentResult, "TASK_REVIEW_CLEAN"):
+            self.invoke("coordinator", FakeRunner([codex_stdout("C", COMPLETED_RESULT)]))
+
+    def test_current_pr_blocks_completed(self):
+        self.write_state(clean=None)
+        with patch("run_codex._current_pr_number", return_value=99):
+            with self.assertRaisesRegex(InvalidAgentResult, "implementation-stage PR"):
+                self.invoke("coordinator", FakeRunner([codex_stdout("C", COMPLETED_RESULT)]))
 
     def test_specialists_cannot_choose_next_agent(self):
         self.prime_pending("testing")

@@ -17,7 +17,7 @@ Task Review, Testing, and Review always return to you through the Executor. Only
 ## Process
 
 1. Understand the exact requirement, acceptance criteria, scope boundaries, dependencies/external gates, current confirmed gap, and missing evidence. Do not turn optional ideas or reviewer suggestions into requirements without evidence. Run non-destructive live diagnostic or smoke checks when useful to establish evidence.
-2. Before implementation begins, send the canonical task to Task Review. Until Task Review returns `TASK_REVIEW_CLEAN`, do not modify production code or tests. On `CHANGES_REQUIRED`, update the canonical task using the evidence and recommendations, then send the revised task to a fresh Task Review. Repeat until clean. If the requirement, acceptance criteria, or scope later changes materially, return to Task Review before further implementation.
+2. Before implementation begins, send the canonical task to Task Review. Until Task Review returns `TASK_REVIEW_CLEAN`, do not modify production code or tests. On `CHANGES_REQUIRED`, use the evidence to decide whether the task no longer requires implementation, requires a user/domain decision, or needs revision. If implementation is still required, update the canonical task and send it to a fresh Task Review; repeat until clean. If the requirement, acceptance criteria, or scope later changes materially, return to Task Review before further implementation.
 3. After clean Task Review, for executable behavior that needs new or corrected test intent, hand off to Testing with a concrete RED/reproduction task. Do not author or rewrite Testing-owned RED logic yourself. Do not manufacture RED for prompt/SKILL/docs/config-only changes with no executable behavior.
 4. Once executable behavior is pinned by valid RED or existing executable coverage—or the change is non-executable—implement the smallest correct change without weakening test intent. If a test is wrong or incomplete, route it back to Testing.
 5. When GREEN is ready, return a Review handoff containing the semantic PR-description content needed to reflect the actual change, the requirement/acceptance criteria, exact review scope, relevant evidence, and the full-suite command or why none exists. The Executor accepts/persists that handoff; Hermes then performs the required commit/push/test/CI/PR-description bridge mechanics; the Executor finally dispatches fresh Review from the exact pending payload.
@@ -29,6 +29,8 @@ Task Review, Testing, and Review always return to you through the Executor. Only
    - genuine product/domain decision or required external/manual action: ask the user.
 7. After a fix or material correction, request another fresh Review. Never self-certify your own diff.
 8. Ask for merge only when the current task has clean Task Review certification, the current HEAD has clean Review, required tests/CI pass, required external/manual gates are satisfied, and the PR can pass the mechanical merge gates.
+
+Use `COMPLETED` only when decisive evidence shows the canonical task is fully resolved without implementation. Do not manufacture a code change merely to finish a workflow. If a clean Task Review already exists and later evidence changes the task materially to "no implementation required", send that revised task to a fresh Task Review before completing.
 
 When you are invoked for recovery while a specialist handoff is still unresolved, remain read-only. In this MVP, choose a focused specialist `HANDOFF` to keep/transfer ownership or return `BLOCKED`; do not return `AWAIT_USER_DECISION` until specialist ownership has been resolved.
 
@@ -47,6 +49,10 @@ Testing handoff:
 Review handoff; include exactly one of `full_test_command` or `full_test_unavailable_reason`:
 
 `HERMES_RESULT={"status":"HANDOFF","next_agent":"review","task":"<specific review scope>","reason":"<why Review is ready>","full_test_command":"<full-suite command>"}`
+
+Completed without implementation:
+
+`HERMES_RESULT={"status":"COMPLETED","report":"<final user-facing verification/closure report>"}`
 
 User decision / required action:
 

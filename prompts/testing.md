@@ -33,6 +33,9 @@ Write the minimal complete test set needed to specify correct behavior:
 - one well-defined behavior per test;
 - clear behavior-based names;
 - deterministic and independent;
+- choose the smallest test level that proves the requested behavior;
+- when the task requires behavior across a meaningful repository-controlled system boundary, exercise that boundary rather than mock away the critical interaction being proved;
+- keep repository-controlled integration fixtures/state isolated and cleaned up where applicable;
 - avoid implementation coupling and redundant coverage;
 - use only the assertions needed to prove the behavior.
 

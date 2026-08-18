@@ -83,67 +83,69 @@ Coordinator
     v
 fresh Task Review
     |
-    +--> CHANGES_REQUIRED -> Coordinator -> fresh Task Review
+    +--> CHANGES_REQUIRED -> Coordinator
+    |                          |
+    |                          +--> task 仍需 implementation -> 修訂 task -> fresh Task Review
+    |                          |
+    |                          +--> evidence 證明無需 implementation -> COMPLETED
     |
     +--> TASK_REVIEW_CLEAN
-    |
-    v
-Coordinator
-    |
-    +--> 若 decisive evidence 證明無需 implementation -> COMPLETED
-    |
-    +--> executable behavior -> HANDOFF -> Testing
-    |                              |
-    |                              v
-    |                         Testing 建立 RED
-    |                              |
-    |                         Executor 驗證仍為 RED
-    |                              |
-    |                         Hermes commit / push
-    |                         並在首個真實 implementation commit 後建立 Draft PR
-    |                              |
-    +<-----------------------------+
-    |
-    v
-Coordinator 實作最小 GREEN
-    |
-    | HANDOFF -> Review
-    v
-Executor ACCEPT
-    |
-Hermes commit / push / tests / CI / 更新 PR description
-    |
-Executor DISPATCH
-    |
-fresh Review
-    |
-    +--> CHANGES_REQUIRED -> Coordinator
-    |         |
-    |         +--> implementation fix
-    |         +--> HANDOFF -> Testing
-    |         +--> 必要時 user decision
-    |
-    +--> REVIEW_CLEAN
-              |
-              v
-      final tests / CI / external gates
-      Draft PR -> ready
               |
               v
           Coordinator
               |
-      AWAIT_USER_MERGE
+              +--> executable behavior -> HANDOFF -> Testing
+              |                              |
+              |                              v
+              |                         Testing 建立 RED
+              |                              |
+              |                         Executor 驗證仍為 RED
+              |                              |
+              |                         Hermes commit / push
+              |                         並在首個真實 implementation commit 後建立 Draft PR
+              |                              |
+              +<-----------------------------+
               |
               v
-        使用者明確批准
+        Coordinator 實作最小 GREEN
               |
+              | HANDOFF -> Review
               v
-      Hermes merge with reviewed_head
+        Executor ACCEPT
+              |
+        Hermes commit / push / tests / CI / 更新 PR description
+              |
+        Executor DISPATCH
+              |
+        fresh Review
+              |
+              +--> CHANGES_REQUIRED -> Coordinator
+              |         |
+              |         +--> implementation fix
+              |         +--> HANDOFF -> Testing
+              |         +--> 必要時 user decision
+              |
+              +--> REVIEW_CLEAN
+                        |
+                        v
+                final tests / CI / external gates
+                Draft PR -> ready
+                        |
+                        v
+                    Coordinator
+                        |
+                AWAIT_USER_MERGE
+                        |
+                        v
+                  使用者明確批准
+                        |
+                        v
+                Hermes merge with reviewed_head
 ```
 
 `Review -> CHANGES_REQUIRED` 不代表一定回 Testing。Coordinator 會依 finding 的來源決定：已被既有 test intent pin 住的 implementation defect 可以直接修；test / coverage gap 或需要 executable reproduction 的 regression 則回 Testing；真正的產品／domain 決策才詢問使用者。
 
-如果 decisive evidence 證明 task 已經不需要 implementation，Coordinator 可以回傳 `COMPLETED`。如果 task 先前已取得 clean Task Review、之後才**實質改變**為「不需要 implementation」，必須先把修訂後的 task 再送一次 fresh Task Review，不能直接 completion。
+如果 decisive evidence 證明 task 已經不需要 implementation，Coordinator 可以回傳 `COMPLETED`。如果 task 先前已取得 clean Task Review、之後才**實質改變**為「不需要 implementation」，必須先把修訂後的 task 再送一次 fresh Task Review。只要 current `TASK_REVIEW_CLEAN` checkpoint 仍存在，`COMPLETED` 就會被拒絕；fresh Task Review 若確認原 task 已不能照原樣進入 implementation，會以 `CHANGES_REQUIRED` 把 evidence 交回 Coordinator，再由 Coordinator completion。
 
 ## Mechanical gates
 
@@ -263,7 +265,7 @@ HERMES_RESULT={...}
 - 只有 Coordinator 可以回傳 `next_agent`。
 - Coordinator `HANDOFF` 只能指向 `task_review`、`testing` 或 `review`，並必須包含非空 `task` 與 `reason`。
 - `HANDOFF -> review` 必須包含且只能包含 `full_test_command` / `full_test_unavailable_reason` 其中之一。
-- `COMPLETED` 必須包含非空 `report`，而且只能在沒有 unresolved specialist ownership、沒有 current implementation-stage PR 的 no-change completion path 使用。
+- `COMPLETED` 必須包含非空 `report`，而且只能在沒有 unresolved specialist ownership、沒有 current `TASK_REVIEW_CLEAN` checkpoint、沒有 current implementation-stage PR 的 no-change completion path 使用。
 - `AWAIT_USER_DECISION` 必須包含非空 `question`。
 - `AWAIT_USER_MERGE` 必須包含 `reviewed_head` 並明確 `draft=false`。
 - Task Review 的 clean / changes-required result 必須提供 evidence/root cause、clearer requirement、acceptance criteria 與 simplest approach。

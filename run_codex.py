@@ -23,6 +23,7 @@ AGENTS = {
 
 RESULT_MARKER = "HERMES_RESULT="
 DEFAULT_AGENT_TIMEOUT_SECONDS = 1800
+DEFAULT_REPOSITORY_COMMAND_TIMEOUT_SECONDS = 60
 TASK_REVIEW_FIELDS = (
     "evidence_and_root_cause",
     "clearer_requirement",
@@ -123,7 +124,13 @@ def _git(repo: Path, *args: str, allow_failure: bool = False) -> subprocess.Comp
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
     completed = subprocess.run(
-        ["git", *args], cwd=repo, text=True, capture_output=True, check=False, env=env
+        ["git", *args],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+        timeout=DEFAULT_REPOSITORY_COMMAND_TIMEOUT_SECONDS,
     )
     if completed.returncode != 0 and not allow_failure:
         detail = (completed.stderr or completed.stdout or "").strip()
@@ -140,15 +147,20 @@ def _gh_env() -> dict:
     return env
 
 
-def _current_pr_head(repo: Path) -> str:
-    completed = subprocess.run(
-        ["gh", "pr", "view", "--json", "headRefOid", "--jq", ".headRefOid"],
+def _gh(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["gh", *args],
         cwd=repo,
         text=True,
         capture_output=True,
         check=False,
         env=_gh_env(),
+        timeout=DEFAULT_REPOSITORY_COMMAND_TIMEOUT_SECONDS,
     )
+
+
+def _current_pr_head(repo: Path) -> str:
+    completed = _gh(repo, "pr", "view", "--json", "headRefOid", "--jq", ".headRefOid")
     head = completed.stdout.strip()
     if completed.returncode != 0 or not head:
         detail = (completed.stderr or completed.stdout or "no PR HEAD returned").strip()
@@ -169,25 +181,18 @@ def _current_pr_number(repo: Path) -> int | None:
     branch = _git(repo, "branch", "--show-current").stdout.strip()
     if not branch:
         raise InvalidAgentResult("unable to determine current branch for PR lookup")
-    completed = subprocess.run(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--head",
-            branch,
-            "--state",
-            "open",
-            "--json",
-            "number",
-            "--limit",
-            "1",
-        ],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=False,
-        env=_gh_env(),
+    completed = _gh(
+        repo,
+        "pr",
+        "list",
+        "--head",
+        branch,
+        "--state",
+        "open",
+        "--json",
+        "number",
+        "--limit",
+        "1",
     )
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "PR lookup failed").strip()
@@ -208,14 +213,7 @@ def _current_pr_number(repo: Path) -> int | None:
 
 
 def _current_pr_is_draft(repo: Path) -> bool:
-    completed = subprocess.run(
-        ["gh", "pr", "view", "--json", "isDraft", "--jq", ".isDraft"],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=False,
-        env=_gh_env(),
-    )
+    completed = _gh(repo, "pr", "view", "--json", "isDraft", "--jq", ".isDraft")
     value = completed.stdout.strip().lower()
     if completed.returncode != 0 or value not in {"true", "false"}:
         detail = (completed.stderr or completed.stdout or "no PR draft state returned").strip()
@@ -226,14 +224,7 @@ def _current_pr_is_draft(repo: Path) -> bool:
 def _current_pr_body_hash(repo: Path) -> str | None:
     if not _has_origin(repo):
         return None
-    completed = subprocess.run(
-        ["gh", "pr", "view", "--json", "body", "--jq", ".body"],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=False,
-        env=_gh_env(),
-    )
+    completed = _gh(repo, "pr", "view", "--json", "body", "--jq", ".body")
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "no PR body returned").strip()
         raise InvalidAgentResult(f"unable to read current PR description: {detail}")
@@ -287,9 +278,7 @@ def _publish_handoff_trace(
         if pr_number is not None
         else ["gh", "issue", "comment", str(issue_number), "--body", body]
     )
-    completed = subprocess.run(
-        command, cwd=repo, text=True, capture_output=True, check=False, env=_gh_env()
-    )
+    completed = _gh(repo, *command[1:])
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "unable to publish trace").strip()
         raise InvalidAgentResult(f"unable to publish workflow handoff trace: {detail}")
@@ -326,9 +315,7 @@ def _publish_specialist_failure_trace(
         if pr_number is not None
         else ["gh", "issue", "comment", str(issue_number), "--body", body]
     )
-    completed = subprocess.run(
-        command, cwd=repo, text=True, capture_output=True, check=False, env=_gh_env()
-    )
+    completed = _gh(repo, *command[1:])
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "unable to publish failure trace").strip()
         raise InvalidAgentResult(f"unable to publish specialist failure trace: {detail}")
@@ -943,7 +930,15 @@ def main(argv=None) -> int:
         return 2
     except Exception as exc:
         error = {"status": "ERROR", "error": str(exc)}
-        if isinstance(exc, (CodexInvocationError, InvalidAgentResult, AgentRepositoryMutationError)):
+        if isinstance(
+            exc,
+            (
+                CodexInvocationError,
+                InvalidAgentResult,
+                AgentRepositoryMutationError,
+                subprocess.TimeoutExpired,
+            ),
+        ):
             try:
                 unverified_artifacts = _worktree_status(repo)
             except Exception:

@@ -30,6 +30,7 @@ Only Coordinator chooses semantic routing. Coordinator and Testing persist per w
 - Agents never mutate git or GitHub state. Task Review and Review are read-only; Coordinator is read-only until Task Review is clean.
 - Before the first agent invocation that may edit the repository, Hermes must ensure the workflow is on a dedicated feature branch.
 - New semantic code-change work must pass fresh Task Review before Testing, GREEN, or Review.
+- Verification/no-change work may terminate with Coordinator `COMPLETED`; if a previously clean task materially changes to no-change, send the revised task through fresh Task Review first.
 - Workflow transport is one durable outstanding handoff: `pending = { from, to, payload }`. For agent-to-agent work, `pending` means the From Agent's handoff has been accepted but the To Agent has not consumed it yet.
 - Agent-to-agent transitions use **ACCEPT -> BRIDGE -> DISPATCH**: Executor accepts/persists the From Agent result, Hermes performs required git/GitHub mechanics, then Executor verifies the pending receiver, publishes the handoff trace from the actual dispatch state, and invokes the To Agent from the exact pending payload.
 - Testing `RED_COMPLETE` is mechanically accepted only while its reported `test_command` still fails; the verification is timeout-bounded and must not change repository state beyond the Testing edits already present.

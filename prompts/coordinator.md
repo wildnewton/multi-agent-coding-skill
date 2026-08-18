@@ -27,7 +27,7 @@ Task Review, Testing, and Review always return to you through the Executor. Only
    - suspected behavioral regression: route to Testing when focused executable reproduction is needed;
    - risk, question, optional improvement, or out-of-scope item: use judgment and do not make it mandatory unless the requirement supports it;
    - genuine product/domain decision or required external/manual action: ask the user.
-7. After a fix or material correction, request another fresh Review. Never self-certify your own diff.
+7. After a fix or material correction, request another fresh Review. Never self-certify your own diff. This includes PR-description-only remediation after `REVIEW_CLEAN`: once the certified PR description changes, request fresh Review before `AWAIT_USER_MERGE`.
 8. Ask for merge only when the current task has clean Task Review certification, the current HEAD has clean Review, required tests/CI pass, required external/manual gates are satisfied, and the PR can pass the mechanical merge gates.
 
 Use `COMPLETED` only when decisive evidence shows the canonical task is fully resolved without implementation. Do not manufacture a code change merely to finish a workflow. If a clean Task Review already exists and later evidence changes the task materially to "no implementation required", send that revised task to a fresh Task Review before completing.

@@ -16,7 +16,7 @@ from typing import Callable, Iterable
 
 AGENTS = {
     "testing": {"prompt": "testing.md", "persistent": True, "statuses": {"RED_COMPLETE", "BLOCKED"}},
-    "coordinator": {"prompt": "coordinator.md", "persistent": True, "statuses": {"HANDOFF", "AWAIT_USER_DECISION", "AWAIT_USER_MERGE", "BLOCKED"}},
+    "coordinator": {"prompt": "coordinator.md", "persistent": True, "statuses": {"HANDOFF", "COMPLETED", "AWAIT_USER_DECISION", "AWAIT_USER_MERGE", "BLOCKED"}},
     "task_review": {"prompt": "task_review.md", "persistent": False, "statuses": {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED", "BLOCKED"}},
     "review": {"prompt": "review.md", "persistent": False, "statuses": {"REVIEW_CLEAN", "CHANGES_REQUIRED", "BLOCKED"}},
 }
@@ -746,7 +746,24 @@ def invoke_agent(
                 raise InvalidAgentResult(
                     f"Coordinator status {status!r} must not include next_agent"
                 )
-            if status == "AWAIT_USER_DECISION":
+            if status == "COMPLETED":
+                _require_nonempty_text(result, "report", "Coordinator COMPLETED")
+                if recovery_coordinator:
+                    raise InvalidAgentResult(
+                        "Coordinator COMPLETED requires no unresolved specialist handoff"
+                    )
+                if state.get("task_review_clean_checkpoint"):
+                    raise InvalidAgentResult(
+                        "Coordinator COMPLETED requires no current TASK_REVIEW_CLEAN checkpoint"
+                    )
+                if _worktree_status(repo):
+                    raise InvalidAgentResult("Coordinator COMPLETED requires a clean worktree")
+                if _current_pr_number(repo) is not None:
+                    raise InvalidAgentResult(
+                        "Coordinator COMPLETED requires no current implementation-stage PR"
+                    )
+                state["pending"] = None
+            elif status == "AWAIT_USER_DECISION":
                 _require_nonempty_text(result, "question", "Coordinator AWAIT_USER_DECISION")
                 if recovery_coordinator:
                     raise InvalidAgentResult(

@@ -3,7 +3,7 @@ import json
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -85,16 +85,10 @@ class RepositoryCommandTimeoutTests(unittest.TestCase):
                 "--prompt-dir",
                 str(prompts),
             ]
-            completed = subprocess.CompletedProcess(
-                ["codex"],
-                0,
-                stdout='{"type":"item.completed","item":{"type":"agent_message","text":"HERMES_RESULT={\\"status\\":\\"HANDOFF\\",\\"next_agent\\":\\"review\\",\\"task\\":\\"review GREEN\\",\\"reason\\":\\"ready\\",\\"full_test_command\\":\\"python -m unittest\\"}"}}\n',
-                stderr="",
-            )
+            completed = subprocess.CompletedProcess(["codex"], 0, stdout="", stderr="")
             timeout = subprocess.TimeoutExpired(["git", "ls-remote"], 60)
 
             stderr = io.StringIO()
-            stdout = io.StringIO()
             with (
                 patch("run_codex._worktree_status", side_effect=[[], [" M scripts/nightly-market-data.sh"]]),
                 patch(
@@ -112,7 +106,6 @@ class RepositoryCommandTimeoutTests(unittest.TestCase):
                 patch("run_codex._default_runner", return_value=completed),
                 patch("run_codex._verify_agent_did_not_mutate_repository", side_effect=timeout),
                 redirect_stderr(stderr),
-                redirect_stdout(stdout),
             ):
                 rc = main(argv)
 

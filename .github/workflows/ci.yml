@@ -31,14 +31,14 @@ jobs:
           python -m compileall -q run_codex.py tests/smoke_long_running_invocation.py
 
       - name: Set up Python 3.13
-        if: always()
+        if: ${{ !cancelled() }}
         id: setup313
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
       - name: Run Python 3.13 checks
-        if: always() && steps.setup313.outcome == 'success'
+        if: ${{ !cancelled() && steps.setup313.outcome == 'success' }}
         run: |
           python -m unittest discover -s tests -v
           python -m compileall -q run_codex.py tests/smoke_long_running_invocation.py

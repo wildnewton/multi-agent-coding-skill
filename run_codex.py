@@ -10,12 +10,12 @@ import os
 import re
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable
 
 
 AGENTS = {
-    "testing": {"prompt": "testing.md", "persistent": True, "statuses": {"RED_COMPLETE", "BLOCKED"}},
+    "testing": {"prompt": "testing.md", "persistent": True, "statuses": {"RED_COMPLETE", "TEST_FIX_COMPLETE", "BLOCKED"}},
     "coordinator": {"prompt": "coordinator.md", "persistent": True, "statuses": {"HANDOFF", "COMPLETED", "AWAIT_USER_DECISION", "AWAIT_USER_MERGE", "BLOCKED"}},
     "task_review": {"prompt": "task_review.md", "persistent": False, "statuses": {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED", "BLOCKED"}},
     "review": {"prompt": "review.md", "persistent": False, "statuses": {"REVIEW_CLEAN", "CHANGES_REQUIRED", "BLOCKED"}},
@@ -326,6 +326,45 @@ def _worktree_status(repo: Path) -> list[str]:
     return [line for line in completed.stdout.splitlines() if line.strip()]
 
 
+def _worktree_paths(repo: Path) -> set[str]:
+    tracked = _git(repo, "diff", "--name-only", "-z", "--").stdout.split("\0")
+    untracked = _git(repo, "ls-files", "--others", "--exclude-standard", "-z").stdout.split("\0")
+    return {path for path in [*tracked, *untracked] if path}
+
+
+def _test_fix_allowed_paths(payload: dict) -> set[str]:
+    values = payload.get("allowed_paths") if isinstance(payload, dict) else None
+    if not isinstance(values, list) or not values:
+        raise InvalidAgentResult(
+            "Coordinator test-fix HANDOFF must include non-empty allowed_paths"
+        )
+    allowed = set()
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            raise InvalidAgentResult(
+                "Coordinator test-fix HANDOFF allowed_paths must contain non-empty strings"
+            )
+        raw = value.strip()
+        path = PurePosixPath(raw)
+        normalized = path.as_posix()
+        if path.is_absolute() or ".." in path.parts or normalized in {"", "."} or normalized != raw:
+            raise InvalidAgentResult(
+                "Coordinator test-fix HANDOFF allowed_paths must be normalized repository-relative paths"
+            )
+        allowed.add(normalized)
+    return allowed
+
+
+def _verify_test_fix_paths(repo: Path, pending: dict) -> None:
+    payload = pending.get("payload") if isinstance(pending, dict) else None
+    allowed = _test_fix_allowed_paths(payload)
+    outside = sorted(_worktree_paths(repo) - allowed)
+    if outside:
+        raise AgentRepositoryMutationError(
+            "Testing TEST_FIX_COMPLETE changed paths outside allowed_paths: " + ", ".join(outside)
+        )
+
+
 def _ensure_clean_worktree(repo: Path) -> None:
     if _worktree_status(repo):
         raise DirtyWorktreeError(
@@ -471,7 +510,14 @@ def _verify_dispatch_bridge(repo: Path, pending: dict, local_head: str) -> None:
         )
 
 
-def _verify_red_command(repo: Path, test_command: str, timeout_seconds: int) -> None:
+def _run_guarded_test_command(
+    repo: Path,
+    test_command: str,
+    timeout_seconds: int,
+    *,
+    timeout_context: str,
+    mutation_context: str,
+) -> subprocess.CompletedProcess:
     before_guard = _capture_repository_guard(repo)
     before_status = _worktree_status(repo)
     try:
@@ -488,20 +534,45 @@ def _verify_red_command(repo: Path, test_command: str, timeout_seconds: int) -> 
         _verify_agent_did_not_mutate_repository(repo, before_guard)
         if _worktree_status(repo) != before_status:
             raise AgentRepositoryMutationError(
-                "Testing RED verification command modified the worktree"
+                f"{mutation_context} verification command modified the worktree"
             ) from exc
         raise InvalidAgentResult(
-            f"Testing RED_COMPLETE test_command timed out after {timeout_seconds} seconds"
+            f"{timeout_context} test_command timed out after {timeout_seconds} seconds"
         ) from exc
 
     _verify_agent_did_not_mutate_repository(repo, before_guard)
     if _worktree_status(repo) != before_status:
         raise AgentRepositoryMutationError(
-            "Testing RED verification command modified the worktree"
+            f"{mutation_context} verification command modified the worktree"
         )
+    return completed
+
+
+def _verify_red_command(repo: Path, test_command: str, timeout_seconds: int) -> None:
+    completed = _run_guarded_test_command(
+        repo,
+        test_command,
+        timeout_seconds,
+        timeout_context="Testing RED_COMPLETE",
+        mutation_context="Testing RED",
+    )
     if completed.returncode == 0:
         raise InvalidAgentResult(
             "Testing RED_COMPLETE test_command must still fail before GREEN"
+        )
+
+
+def _verify_test_fix_command(repo: Path, test_command: str, timeout_seconds: int) -> None:
+    completed = _run_guarded_test_command(
+        repo,
+        test_command,
+        timeout_seconds,
+        timeout_context="Testing TEST_FIX_COMPLETE",
+        mutation_context="Testing TEST_FIX_COMPLETE",
+    )
+    if completed.returncode != 0:
+        raise InvalidAgentResult(
+            "Testing TEST_FIX_COMPLETE test_command must pass after the test-only correction"
         )
 
 
@@ -679,8 +750,20 @@ def invoke_agent(
             )
         if agent in specialists and "next_agent" in result:
             raise InvalidAgentResult(f"agent {agent!r} is not allowed to choose next_agent")
-        if agent == "testing" and status == "RED_COMPLETE":
-            _require_nonempty_text(result, "test_command", "Testing RED_COMPLETE")
+        if agent == "testing" and status in {"RED_COMPLETE", "TEST_FIX_COMPLETE"}:
+            _require_nonempty_text(result, "test_command", f"Testing {status}")
+            payload = pending.get("payload") if isinstance(pending, dict) else None
+            testing_intent = payload.get("testing_intent") if isinstance(payload, dict) else None
+            if status == "TEST_FIX_COMPLETE":
+                if testing_intent != "test_fix":
+                    raise InvalidAgentResult(
+                        "Testing TEST_FIX_COMPLETE requires a pending test_fix handoff"
+                    )
+                _test_fix_allowed_paths(payload)
+            elif testing_intent == "test_fix":
+                raise InvalidAgentResult(
+                    "Testing test_fix handoff must complete with TEST_FIX_COMPLETE"
+                )
         if agent == "task_review" and status in {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED"}:
             for field in TASK_REVIEW_FIELDS:
                 _require_nonempty_text(result, field, f"Task Review {status}")
@@ -717,6 +800,20 @@ def invoke_agent(
                 raise InvalidAgentResult(
                     f"Coordinator cannot hand off to {next_agent!r} before TASK_REVIEW_CLEAN"
                 )
+
+            if next_agent == "testing":
+                testing_intent = result.get("testing_intent")
+                if testing_intent is None:
+                    if "allowed_paths" in result:
+                        raise InvalidAgentResult(
+                            "Coordinator ordinary Testing HANDOFF must not include allowed_paths"
+                        )
+                elif testing_intent == "test_fix":
+                    _test_fix_allowed_paths(result)
+                else:
+                    raise InvalidAgentResult(
+                        "Coordinator Testing HANDOFF testing_intent must be 'test_fix' when provided"
+                    )
 
             if next_agent == "review":
                 has_full_command = _has_nonempty_text(result, "full_test_command")
@@ -811,9 +908,13 @@ def invoke_agent(
                 state["pending"] = None
 
     elif agent == "testing":
-        if status == "RED_COMPLETE":
+        if status in {"RED_COMPLETE", "TEST_FIX_COMPLETE"}:
             try:
-                _verify_red_command(repo, result["test_command"], timeout_seconds)
+                if status == "RED_COMPLETE":
+                    _verify_red_command(repo, result["test_command"], timeout_seconds)
+                else:
+                    _verify_test_fix_paths(repo, pending)
+                    _verify_test_fix_command(repo, result["test_command"], timeout_seconds)
             except (InvalidAgentResult, AgentRepositoryMutationError) as exc:
                 _publish_specialist_failure_trace(
                     repo,

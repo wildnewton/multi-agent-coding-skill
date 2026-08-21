@@ -332,6 +332,25 @@ def _worktree_paths(repo: Path) -> set[str]:
     return {path for path in [*tracked, *untracked] if path}
 
 
+def _worktree_content_snapshot(repo: Path) -> dict[str, tuple[int | None, str | None]]:
+    snapshot = {}
+    for path in sorted(_worktree_paths(repo)):
+        file_path = repo / path
+        try:
+            mode = file_path.lstat().st_mode
+        except FileNotFoundError:
+            snapshot[path] = (None, None)
+            continue
+        if file_path.is_symlink():
+            content = os.readlink(file_path).encode()
+        elif file_path.is_file():
+            content = file_path.read_bytes()
+        else:
+            content = b""
+        snapshot[path] = (mode, hashlib.sha256(content).hexdigest())
+    return snapshot
+
+
 def _test_fix_allowed_paths(payload: dict) -> set[str]:
     values = payload.get("allowed_paths") if isinstance(payload, dict) else None
     if not isinstance(values, list) or not values:
@@ -517,9 +536,11 @@ def _run_guarded_test_command(
     *,
     timeout_context: str,
     mutation_context: str,
+    content_guard: bool = False,
 ) -> subprocess.CompletedProcess:
     before_guard = _capture_repository_guard(repo)
     before_status = _worktree_status(repo)
+    before_content = _worktree_content_snapshot(repo) if content_guard else None
     try:
         completed = subprocess.run(
             test_command,
@@ -532,7 +553,9 @@ def _run_guarded_test_command(
         )
     except subprocess.TimeoutExpired as exc:
         _verify_agent_did_not_mutate_repository(repo, before_guard)
-        if _worktree_status(repo) != before_status:
+        if _worktree_status(repo) != before_status or (
+            before_content is not None and _worktree_content_snapshot(repo) != before_content
+        ):
             raise AgentRepositoryMutationError(
                 f"{mutation_context} verification command modified the worktree"
             ) from exc
@@ -541,7 +564,9 @@ def _run_guarded_test_command(
         ) from exc
 
     _verify_agent_did_not_mutate_repository(repo, before_guard)
-    if _worktree_status(repo) != before_status:
+    if _worktree_status(repo) != before_status or (
+        before_content is not None and _worktree_content_snapshot(repo) != before_content
+    ):
         raise AgentRepositoryMutationError(
             f"{mutation_context} verification command modified the worktree"
         )
@@ -569,6 +594,7 @@ def _verify_test_fix_command(repo: Path, test_command: str, timeout_seconds: int
         timeout_seconds,
         timeout_context="Testing TEST_FIX_COMPLETE",
         mutation_context="Testing TEST_FIX_COMPLETE",
+        content_guard=True,
     )
     if completed.returncode != 0:
         raise InvalidAgentResult(

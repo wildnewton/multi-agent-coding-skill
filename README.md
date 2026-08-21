@@ -6,7 +6,7 @@
 
 - **Coordinator（協調者）** — 語義上的路由中心。負責 canonical task、requirements / scope、production implementation / GREEN、finding triage 與 merge-readiness 判斷；只有它可以決定下一個 specialist agent。
 - **Task Review（任務審查）** — 在 implementation 前獨立驗證 task / requirement / acceptance criteria；每次都是全新的唯讀審查。
-- **Testing（測試）** — 負責 RED test intent 與 test quality。可以修改 tests、fixtures 與 test-only helpers，但不負責 production implementation。
+- **Testing（測試）** — 負責 RED test intent、明確授權的 test-only correction 與 test quality。可以修改 tests、fixtures 與 test-only helpers，但不負責 production implementation。
 - **Review（審查）** — 對最新 committed HEAD 的完整 PR diff 進行全新的唯讀審查，並回傳 findings 或 clean certification。
 - **Executor（`run_codex.py`）** — 負責 deterministic handoff、workflow state、result-contract validation、dispatch audit 與 mechanical gates。
 - **Hermes** — 負責 user-facing transport，以及 Executor 之外的 branch / commit / push / test / CI / Draft PR / merge 等 Git/GitHub mechanics。
@@ -21,7 +21,7 @@
 
 1. 需求由 Coordinator 統一理解與分派；
 2. 新的 semantic code-change work 必須先經 Task Review；
-3. executable behavior 優先由 Testing 建立或修正 RED intent；
+3. executable behavior 優先由 Testing 建立或修正 RED intent；已確認的既有 test / fixture / test-helper defect 則可經窄義 test-fix path 回 Testing；
 4. 每次 agent-to-agent transition 都先被 Executor 接受並持久化，再進行必要的 Git/GitHub bridge，最後才 dispatch 下一個 agent；
 5. specialist failure 不會偷偷丟失 ownership；原本的 pending handoff 會保留；
 6. Review clean certification 綁定 reviewed HEAD 與 PR description；
@@ -143,7 +143,7 @@ fresh Task Review
                 Hermes merge with reviewed_head
 ```
 
-`Review -> CHANGES_REQUIRED` 不代表一定回 Testing。Coordinator 會依 finding 的來源決定：已被既有 test intent pin 住的 implementation defect 可以直接修；test / coverage gap 或需要 executable reproduction 的 regression 則回 Testing；真正的產品／domain 決策才詢問使用者。
+`Review -> CHANGES_REQUIRED` 不代表一定回 Testing。Coordinator 會依 finding 的來源決定：已被既有 test intent pin 住的 implementation defect 可以直接修；已確認且正確修復後應保持 GREEN 的既有 test / fixture / test-helper defect，使用 `testing_intent: "test_fix"` + exact `allowed_paths` 回 Testing；test / coverage gap 或需要 executable reproduction 的 regression 則走普通 RED；真正的產品／domain 決策才詢問使用者。
 
 如果 decisive evidence 證明 task 已經不需要 implementation，Coordinator 可以回傳 `COMPLETED`。如果 task 先前已取得 clean Task Review、之後才**實質改變**為「不需要 implementation」，必須先把修訂後的 task 再送一次 fresh Task Review。只要 current `TASK_REVIEW_CLEAN` checkpoint 仍存在，`COMPLETED` 就會被拒絕；fresh Task Review 若確認原 task 已不能照原樣進入 implementation，會以 `CHANGES_REQUIRED` 把 evidence 交回 Coordinator，再由 Coordinator completion。
 
@@ -160,7 +160,7 @@ Executor 不會因為 agent 聲稱「完成」就直接接受 transition。
 
 ### RED gate
 
-Testing 回傳 `RED_COMPLETE` 時：
+普通 Testing handoff 回傳 `RED_COMPLETE` 時：
 
 - 必須提供非空的 `test_command`；
 - Executor 會實際執行該 command；
@@ -169,6 +169,20 @@ Testing 回傳 `RED_COMPLETE` 時：
 - Testing 自己也不能 commit、push 或修改 branch / remote state。
 
 只有 RED 被 mechanically accepted 後，才會建立 `Testing -> Coordinator` pending handoff。
+
+### Test-fix gate
+
+只有 Coordinator 已確認既有 test / fixture / test-helper defect，而且正確修復後 verification 應該通過時，才使用特殊 Testing handoff：
+
+- handoff 必須明確包含 `testing_intent: "test_fix"`；
+- 必須提供非空、normalized、repository-relative 的 exact `allowed_paths`；
+- Testing 只能以 `TEST_FIX_COMPLETE` 完成，不能假裝成普通 RED；
+- Executor mechanically 確認 Testing invocation 的所有 changed paths 都在 `allowed_paths`；
+- `test_command` 必須**成功**；
+- command verification 同樣有 timeout 與 repository-mutation guard；
+- 普通 RED handoff 不接受 `TEST_FIX_COMPLETE`。
+
+這條 path 不新增 GREEN phase/checkpoint，也不靠 path naming heuristic 猜哪些檔案是 production code。有效完成後仍使用既有 `Testing -> Coordinator` pending lifecycle；之後若 HEAD 改變，仍必須 fresh Review。
 
 ### Implementation / Review dispatch gate
 
@@ -214,7 +228,7 @@ specialist invocation 若發生以下情況：
 - non-zero exit；
 - malformed / role-invalid result；
 - `BLOCKED`；
-- mechanical acceptance failure，例如 RED command 已經變 GREEN；
+- mechanical acceptance failure，例如 RED command 已經變 GREEN、test-fix command 失敗或 test-fix 改到 `allowed_paths` 之外；
 
 原本的 specialist `pending` 會保持 unresolved，而不是被當成完成。Executor 會盡可能留下 specialist failure trace。
 
@@ -257,13 +271,15 @@ HERMES_RESULT={...}
 | --- | --- |
 | Coordinator | `HANDOFF`, `COMPLETED`, `AWAIT_USER_DECISION`, `AWAIT_USER_MERGE`, `BLOCKED` |
 | Task Review | `TASK_REVIEW_CLEAN`, `CHANGES_REQUIRED`, `BLOCKED` |
-| Testing | `RED_COMPLETE`, `BLOCKED` |
+| Testing | `RED_COMPLETE`, `TEST_FIX_COMPLETE`, `BLOCKED` |
 | Review | `REVIEW_CLEAN`, `CHANGES_REQUIRED`, `BLOCKED` |
 
 重要限制：
 
 - 只有 Coordinator 可以回傳 `next_agent`。
 - Coordinator `HANDOFF` 只能指向 `task_review`、`testing` 或 `review`，並必須包含非空 `task` 與 `reason`。
+- 普通 `HANDOFF -> testing` 不包含 `testing_intent` / `allowed_paths`，維持既有 RED semantics。
+- 特殊 `HANDOFF -> testing` 只有 `testing_intent: "test_fix"` 合法，並必須包含非空 exact `allowed_paths`；只有此 handoff 可接受 `TEST_FIX_COMPLETE`。
 - `HANDOFF -> review` 必須包含且只能包含 `full_test_command` / `full_test_unavailable_reason` 其中之一。
 - `COMPLETED` 必須包含非空 `report`，而且只能在沒有 unresolved specialist ownership、沒有 current `TASK_REVIEW_CLEAN` checkpoint、沒有 current implementation-stage PR 的 no-change completion path 使用。
 - `AWAIT_USER_DECISION` 必須包含非空 `question`。
@@ -363,7 +379,7 @@ Audit publishing 採 fail-closed：正式 dispatch trace 發布失敗時，不�
 ├── prompts/
 │   ├── coordinator.md       # Coordinator 角色與 result contract
 │   ├── task_review.md       # Task Review 角色與 review contract
-│   ├── testing.md           # Testing / RED 角色規格
+│   ├── testing.md           # Testing / RED + test-fix 角色規格
 │   └── review.md            # Review 角色與 finding contract
 ├── state/                   # workflow state（runtime 產生）
 ├── tests/                   # Executor / workflow regression tests
@@ -389,6 +405,7 @@ python3 -m compileall -q run_codex.py tests/smoke_long_running_invocation.py
 - Task Review -> Coordinator iterative loop；
 - no-change `COMPLETED` path；
 - Testing RED mechanical verification；
+- Testing test-fix allowlist + passing-command verification；
 - ACCEPT -> BRIDGE -> DISPATCH handoff lifecycle；
 - Draft PR 在第一個真實 implementation commit 後建立；
 - Review -> Coordinator rework；

@@ -18,7 +18,7 @@ Use this skill when the user asks Hermes to implement a code change with the mul
 - **User:** owns product/domain decisions and destructive authorization, including final merge approval.
 - **Coordinator:** owns the canonical task, requirement/scope, implementation/GREEN, finding triage, semantic routing, and merge-readiness judgment.
 - **Task Review:** independently certifies the task before implementation.
-- **Testing:** owns RED intent and test quality.
+- **Testing:** owns RED intent, explicitly authorized test-only corrections, and test quality.
 - **Review:** independently certifies the implemented PR diff at the latest committed HEAD.
 - **Executor (`run_codex.py`):** owns deterministic handoff/state/audit mechanics and mechanical gate enforcement.
 - **Hermes:** transports user intent/answers and performs remaining branch/commit/push/CI/PR/approved-merge mechanics outside the Executor.
@@ -33,7 +33,8 @@ Only Coordinator chooses semantic routing. Coordinator and Testing persist per w
 - Verification/no-change work may terminate with Coordinator `COMPLETED`; if a previously clean task materially changes to no-change, send the revised task through fresh Task Review first.
 - Workflow transport is one durable outstanding handoff: `pending = { from, to, payload }`. For agent-to-agent work, `pending` means the From Agent's handoff has been accepted but the To Agent has not consumed it yet.
 - Agent-to-agent transitions use **ACCEPT -> BRIDGE -> DISPATCH**: Executor accepts/persists the From Agent result, Hermes performs required git/GitHub mechanics, then Executor verifies the pending receiver, publishes the handoff trace from the actual dispatch state, and invokes the To Agent from the exact pending payload.
-- Testing `RED_COMPLETE` is mechanically accepted only while its reported `test_command` still fails; the verification is timeout-bounded and must not change repository state beyond the Testing edits already present.
+- Ordinary Testing `RED_COMPLETE` is mechanically accepted only while its reported `test_command` still fails; the verification is timeout-bounded and must not change repository state beyond the Testing edits already present.
+- A confirmed existing test/fixture/test-helper defect whose correct repair should pass may use the narrow `testing_intent: "test_fix"` handoff with exact repository-relative `allowed_paths`. Only that handoff may complete with `TEST_FIX_COMPLETE`; Executor requires all changed paths to stay within `allowed_paths` and the reported `test_command` to pass. This does not add a workflow phase or weaken ordinary RED.
 - Specialist timeout, `BLOCKED`, malformed/invalid output, non-zero exit, or failed mechanical acceptance leaves the original specialist handoff unresolved. Recovery Coordinator remains read-only and, in this MVP, may only replace that ownership with a new specialist `HANDOFF` or return `BLOCKED`; it cannot wait on a user decision while specialist ownership is unresolved.
 - Task Review clean certification persists as the accepted task checkpoint. Review clean certification persists as reviewed HEAD + PR-description identity. Stale certification blocks merge readiness.
 - Task Review handoffs stay on the canonical Issue. Other formal agent traces are published at dispatch: before a PR exists they use the Issue; once a PR exists they use the PR. Do not backfill earlier handoffs.
@@ -80,10 +81,10 @@ After Task Review is clean, do **not** create an empty commit merely to open a P
    Start from the user request and decisive repository evidence. Executor accepts Coordinator's Task Review handoff, then dispatches fresh Task Review from the exact pending payload. Task Review results are accepted back into `Task Review -> Coordinator` with the Executor-computed reviewed-task checkpoint and dispatched to Coordinator. Repeat `CHANGES_REQUIRED` iterations until clean. No implementation/test edits are allowed before clean Task Review.
 
 2. **Coordinator -> Testing -> Coordinator**  
-   For executable behavior needing new/corrected test intent, Executor accepts Coordinator's Testing handoff and dispatches Testing. Testing owns test/fixture/helper edits; Executor mechanically verifies RED before accepting `Testing -> Coordinator`. Hermes then commits/pushes RED and, if this is the first real implementation commit, opens the Draft PR before Executor dispatches Coordinator. The initial `Coordinator -> Testing` trace may therefore be on the Issue; `Testing -> Coordinator` and later implementation traces are on the PR.
+   For executable behavior needing new/corrected test intent, Executor accepts an ordinary Coordinator Testing handoff and dispatches Testing. Testing owns test/fixture/helper edits; Executor mechanically verifies RED before accepting `Testing -> Coordinator`. If an already-pinned/GREEN behavior instead exposes a confirmed existing test/fixture/test-helper defect whose correct repair should pass, Coordinator uses `testing_intent: "test_fix"` plus exact `allowed_paths`; Executor accepts `TEST_FIX_COMPLETE` only when the changed paths stay within that allowlist and the reported command passes. Hermes then commits/pushes accepted Testing edits and, if this is the first real implementation commit, opens the Draft PR before Executor dispatches Coordinator. The initial `Coordinator -> Testing` trace may therefore be on the Issue; `Testing -> Coordinator` and later implementation traces are on the PR.
 
 3. **GREEN -> Review -> Coordinator**  
-   Coordinator implements the smallest GREEN and returns a Review handoff. Executor accepts it; Hermes commits/pushes GREEN, runs applicable tests/CI, and updates the PR description. Executor then publishes `Coordinator -> Review` at the final dispatch HEAD and invokes fresh Review. `REVIEW_CLEAN` certifies that reviewed HEAD + PR description; Review fixes require the same ACCEPT -> BRIDGE -> DISPATCH loop again.
+   Coordinator implements the smallest GREEN and returns a Review handoff. Executor accepts it; Hermes commits/pushes GREEN, runs applicable tests/CI, and updates the PR description. Executor then publishes `Coordinator -> Review` at the final dispatch HEAD and invokes fresh Review. `REVIEW_CLEAN` certifies that reviewed HEAD + PR description; Review fixes require the same ACCEPT -> BRIDGE -> DISPATCH loop again. Any accepted test-only correction changes HEAD and therefore also requires fresh Review before merge readiness.
 
 4. **User decision**  
    On `AWAIT_USER_DECISION`, Hermes asks the user and passes the exact answer back. The Executor persists `User -> Coordinator` before resuming Coordinator so retry reuses the accepted answer. This path is only available when no specialist handoff remains unresolved.
@@ -97,7 +98,7 @@ Capability-isolating raw git/GitHub privileges behind the Executor is outside th
 
 - `ERROR` is not an agent result; never reinterpret partial output as accepted work.
 - Do not commit reported `unverified_artifacts`.
-- Specialist failure leaves its pending ownership unresolved. Before recovery, Hermes discards/restores failed or `BLOCKED` invocation leftovers, then gives decisive failure evidence to read-only Coordinator rather than doing specialist work itself.
+- Specialist failure leaves its pending ownership unresolved. This includes invalid RED/test-fix completion, failed test-fix verification, or test-fix edits outside `allowed_paths`. Before recovery, Hermes discards/restores failed or `BLOCKED` invocation leftovers, then gives decisive failure evidence to read-only Coordinator rather than doing specialist work itself.
 - Dispatch-trace or dispatch-bridge failure leaves the accepted pending handoff in place and prevents the To Agent from running; complete/fix the bridge and retry dispatch rather than reconstructing the handoff.
 - Report unrecoverable Coordinator failure to the user.
 

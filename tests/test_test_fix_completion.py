@@ -239,6 +239,37 @@ class TestFixCompletionTests(unittest.TestCase):
         self.assertEqual(self.state()["pending"], pending)
         self.assertTrue((self.repo / "generated.txt").exists())
 
+    def test_test_fix_verification_command_cannot_rewrite_dirty_allowed_path(self):
+        pending = {
+            "from": "coordinator",
+            "to": "testing",
+            "payload": {
+                "status": "HANDOFF",
+                "next_agent": "testing",
+                "testing_intent": "test_fix",
+                "allowed_paths": ["tests/fixture.txt"],
+                "task": "Correct confirmed stale fixture",
+                "reason": "test-only defect",
+            },
+        }
+        self.write_state(pending)
+        command = (
+            "python -c \"from pathlib import Path; "
+            "Path('tests/fixture.txt').write_text('rewritten-by-command\\n')\""
+        )
+        runner = FakeRunner(
+            {"status": "TEST_FIX_COMPLETE", "test_command": command},
+            mutation=lambda repo: (repo / "tests" / "fixture.txt").write_text(
+                "fixed-by-agent\n", encoding="utf-8"
+            ),
+        )
+        with self.assertRaisesRegex(
+            AgentRepositoryMutationError,
+            "TEST_FIX_COMPLETE verification command modified the worktree",
+        ):
+            self.invoke("testing", runner)
+        self.assertEqual(self.state()["pending"], pending)
+
     def test_test_fix_result_is_rejected_from_ordinary_red_handoff(self):
         pending = {
             "from": "coordinator",

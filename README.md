@@ -151,6 +151,13 @@ fresh Task Review
 
 Executor 不會因為 agent 聲稱「完成」就直接接受 transition。
 
+### Task Review gate
+
+- 新的 semantic code-change work 在 Testing、production implementation 或 Review 前，都必須取得 fresh `TASK_REVIEW_CLEAN`。
+- `CHANGES_REQUIRED` 會回到 Coordinator；如果仍需 implementation，Coordinator 修正 canonical task 後再次送 fresh Task Review。
+- Task Review certification 以 task checkpoint 持久化；material task change 會使舊 certification 失效。
+- Task Review 與 Task Review clean 前的 Coordinator invocation 必須保持 worktree 唯讀。
+
 ### RED gate
 
 普通 Testing handoff 回傳 `RED_COMPLETE` 時：

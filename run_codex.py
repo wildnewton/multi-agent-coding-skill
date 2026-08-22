@@ -716,6 +716,7 @@ def invoke_external_verification(
     repo: str | Path,
     state_file: str | Path,
     command_runner: Callable | None = None,
+    unavailable_reason: str | None = None,
     timeout_seconds: int = DEFAULT_AGENT_TIMEOUT_SECONDS,
 ) -> dict:
     if timeout_seconds <= 0:
@@ -748,6 +749,22 @@ def invoke_external_verification(
         pending,
         head=repository_guard["head"],
     )
+
+    if unavailable_reason is not None:
+        if not isinstance(unavailable_reason, str) or not unavailable_reason.strip():
+            raise InvalidAgentResult("external verification unavailable reason must be non-empty")
+        result = {
+            "status": "EXTERNAL_VERIFICATION_UNAVAILABLE",
+            "request": request,
+            "head": repository_guard["head"],
+            "reason": unavailable_reason.strip(),
+        }
+        state["external_verification"] = None
+        state["review_certification"] = None
+        state["pending"] = {"from": "executor", "to": "coordinator", "payload": result}
+        _save_state(state_file, state)
+        return result
+
     before_status = _worktree_status(repo)
     execution_status = "completed"
     exit_status = None
@@ -1289,6 +1306,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent", choices=tuple(AGENTS))
     parser.add_argument("--run-external-verification", action="store_true")
+    parser.add_argument("--external-verification-unavailable")
     parser.add_argument("--workflow", required=True)
     parser.add_argument("--repo", required=True)
     parser.add_argument("--task", default="")
@@ -1301,10 +1319,24 @@ def main(argv=None) -> int:
         help=f"Codex subprocess timeout in seconds (default: {DEFAULT_AGENT_TIMEOUT_SECONDS})",
     )
     args = parser.parse_args(argv)
-    if bool(args.agent) == bool(args.run_external_verification):
-        parser.error("specify exactly one of --agent or --run-external-verification")
+    action_count = sum(
+        [
+            args.agent is not None,
+            bool(args.run_external_verification),
+            args.external_verification_unavailable is not None,
+        ]
+    )
+    if action_count != 1:
+        parser.error(
+            "specify exactly one of --agent, --run-external-verification, or --external-verification-unavailable"
+        )
     if args.agent and not args.task.strip():
         parser.error("--task is required with --agent")
+    if (
+        args.external_verification_unavailable is not None
+        and not args.external_verification_unavailable.strip()
+    ):
+        parser.error("--external-verification-unavailable requires a non-empty reason")
 
     root = Path(__file__).resolve().parent
     repo = Path(args.repo).resolve()
@@ -1314,11 +1346,12 @@ def main(argv=None) -> int:
     prompt_dir = Path(args.prompt_dir) if args.prompt_dir else root / "prompts"
 
     try:
-        if args.run_external_verification:
+        if args.run_external_verification or args.external_verification_unavailable is not None:
             result = invoke_external_verification(
                 workflow_id=args.workflow,
                 repo=repo,
                 state_file=state_file,
+                unavailable_reason=args.external_verification_unavailable,
                 timeout_seconds=args.timeout_seconds,
             )
         else:

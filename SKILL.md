@@ -35,7 +35,7 @@ Only Coordinator chooses semantic routing. Coordinator and Testing persist per w
 - Agent-to-agent transitions use **ACCEPT -> BRIDGE -> DISPATCH**: Executor accepts/persists the From Agent result, Hermes performs required git/GitHub mechanics, then Executor verifies the pending receiver, publishes the handoff trace from the actual dispatch state, and invokes the To Agent from the exact pending payload.
 - Ordinary Testing `RED_COMPLETE` is mechanically accepted only while its reported `test_command` still fails; the verification is timeout-bounded and must not change repository state beyond the Testing edits already present.
 - A confirmed existing test/fixture/test-helper defect whose correct repair should pass may use the narrow `testing_intent: "test_fix"` handoff with exact repository-relative `allowed_paths`. Only that handoff may complete with `TEST_FIX_COMPLETE`; Executor requires all changed paths to stay within `allowed_paths` and the reported `test_command` to pass. This does not add a workflow phase or weaken ordinary RED.
-- Required external verification is limited to one non-destructive command/suite against the committed candidate HEAD. Hermes executes it through the pending Executor action; agent sandbox limitations alone do not justify asking the user. Non-zero/timeout/command-execution outcomes are evidence for Coordinator, while Executor/orchestration failures remain workflow errors. If decisive evidence shows Hermes itself cannot perform the run, Coordinator may use structured `AWAIT_USER_DECISION`; externally supplied evidence is not mechanically attested. Preserved raw evidence is Coordinator/Review workflow context, not public audit content. Do not inline secrets in verification commands; use existing environment/config instead.
+- Required external verification is limited to one non-destructive command/suite against the committed candidate HEAD. Hermes executes it through the pending Executor action; agent sandbox limitations alone do not justify asking the user. Non-zero/timeout/command-execution outcomes are evidence for Coordinator, while Executor/orchestration failures remain workflow errors. If Hermes cannot safely/correctly perform the requested run, it reports unavailability through the same Executor action so Coordinator can decide whether user direction/external execution is needed; this does not satisfy the gate or create verification evidence. Externally supplied evidence is not mechanically attested. Preserved raw evidence is Coordinator/Review workflow context, not public audit content. Do not inline secrets in verification commands; use existing environment/config instead.
 - Specialist timeout, `BLOCKED`, malformed/invalid output, non-zero exit, or failed mechanical acceptance leaves the original specialist handoff unresolved. Recovery Coordinator remains read-only and, in this MVP, may only replace that ownership with a new specialist `HANDOFF` or return `BLOCKED`; it cannot wait on a user decision while specialist ownership is unresolved.
 - Task Review clean certification persists as the accepted task checkpoint. Review clean certification persists as reviewed HEAD + PR-description identity. Stale certification blocks merge readiness.
 - Task Review handoffs stay on the canonical Issue. Other formal agent traces are published at dispatch: before a PR exists they use the Issue; once a PR exists they use the PR. Do not backfill earlier handoffs.
@@ -65,6 +65,15 @@ python3 <skill-dir>/run_codex.py \
   --workflow <workflow-id> \
   --repo <target-repo> \
   --timeout-seconds 1800
+```
+
+If Hermes cannot safely/correctly execute that pending request, return the capability evidence without running the command:
+
+```bash
+python3 <skill-dir>/run_codex.py \
+  --external-verification-unavailable '<reason>' \
+  --workflow <workflow-id> \
+  --repo <target-repo>
 ```
 
 Use a stable workflow id, normally `issue-<number>` or `pr-<number>`; use `issue-<number>` when Task Review must trace to a canonical Issue.
@@ -97,7 +106,7 @@ After Task Review is clean, do **not** create an empty commit merely to open a P
    For executable behavior needing new/corrected test intent, Executor accepts an ordinary Coordinator Testing handoff and dispatches Testing. Testing owns test/fixture/helper edits; Executor mechanically verifies RED before accepting `Testing -> Coordinator`. If an already-pinned/GREEN behavior instead exposes a confirmed existing test/fixture/test-helper defect whose correct repair should pass, Coordinator uses `testing_intent: "test_fix"` plus exact `allowed_paths`; Executor accepts `TEST_FIX_COMPLETE` only when the changed paths stay within that allowlist and the reported command passes. Hermes then commits/pushes accepted Testing edits and, if this is the first real implementation commit, opens the Draft PR before Executor dispatches Coordinator. The initial `Coordinator -> Testing` trace may therefore be on the Issue; `Testing -> Coordinator` and later implementation traces are on the PR.
 
 3. **GREEN -> required external verification when applicable -> Review -> Coordinator**  
-   Coordinator implements the smallest GREEN. If certified acceptance requires external verification, Coordinator returns `VERIFY_EXTERNAL`; Hermes commits/pushes/synchronizes the candidate and invokes the pending Executor action on its capable host/environment. Executor records current-HEAD evidence for Coordinator classification. If decisive evidence establishes Hermes cannot perform the run, Coordinator may instead use structured `AWAIT_USER_DECISION`. Any HEAD change makes earlier required external evidence stale.
+   Coordinator implements the smallest GREEN. If certified acceptance requires external verification, Coordinator returns `VERIFY_EXTERNAL`; Hermes commits/pushes/synchronizes the candidate and resolves the pending Executor action by either running the command or reporting that Hermes cannot safely/correctly execute it. Completed-run evidence is returned for Coordinator classification; unavailability is returned to Coordinator without satisfying the gate, after which Coordinator may use structured `AWAIT_USER_DECISION` if needed. Any HEAD change makes earlier required external evidence stale.
 
    When GREEN and required external evidence are ready, Coordinator sends fresh Review with its classification/rationale; Executor supplies the preserved evidence separately. Required external verification must be complete before the Review that certifies merge readiness.
 

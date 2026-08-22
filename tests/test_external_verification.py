@@ -165,6 +165,32 @@ class ExternalVerificationTests(unittest.TestCase):
         self.assertIn("browser executable unavailable", evidence["stderr"])
         self.assertEqual(self.state()["pending"]["from"], "executor")
 
+    def test_hermes_can_report_unavailable_without_running_command(self):
+        requested = self.request_executor_verification()
+        calls = []
+
+        def command_runner(command, cwd, timeout_seconds):
+            calls.append(command)
+            raise AssertionError("verification command must not run")
+
+        result = run_codex.invoke_external_verification(
+            workflow_id="issue-25",
+            repo=self.repo,
+            state_file=self.state_file,
+            command_runner=command_runner,
+            unavailable_reason="Hermes host lacks required browser/network access",
+        )
+        self.assertEqual(calls, [])
+        self.assertEqual(result["status"], "EXTERNAL_VERIFICATION_UNAVAILABLE")
+        self.assertEqual(result["request"], requested)
+        self.assertEqual(result["head"], self._git("rev-parse", "HEAD").stdout.strip())
+        state = self.state()
+        self.assertIsNone(state["external_verification"])
+        self.assertEqual(
+            state["pending"],
+            {"from": "executor", "to": "coordinator", "payload": result},
+        )
+
     def test_executor_orchestration_failure_keeps_original_pending(self):
         requested = self.request_executor_verification()
 
@@ -266,7 +292,7 @@ class ExternalVerificationTests(unittest.TestCase):
             "external_verification": {
                 "command": "pytest -q -m live tests/test_live_integration.py",
                 "boundary": "real Playwright-backed official scraper boundary",
-                "reason": "Executor environment cannot launch Chromium",
+                "reason": "Hermes-side capability evidence confirms Chromium is unavailable",
                 "expected_head": head,
             },
         }

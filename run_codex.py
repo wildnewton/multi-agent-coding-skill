@@ -16,7 +16,7 @@ from typing import Callable, Iterable
 
 AGENTS = {
     "testing": {"prompt": "testing.md", "persistent": True, "statuses": {"RED_COMPLETE", "TEST_FIX_COMPLETE", "BLOCKED"}},
-    "coordinator": {"prompt": "coordinator.md", "persistent": True, "statuses": {"HANDOFF", "COMPLETED", "AWAIT_USER_DECISION", "AWAIT_USER_MERGE", "BLOCKED"}},
+    "coordinator": {"prompt": "coordinator.md", "persistent": True, "statuses": {"HANDOFF", "VERIFY_EXTERNAL", "COMPLETED", "AWAIT_USER_DECISION", "AWAIT_USER_MERGE", "BLOCKED"}},
     "task_review": {"prompt": "task_review.md", "persistent": False, "statuses": {"TASK_REVIEW_CLEAN", "CHANGES_REQUIRED", "BLOCKED"}},
     "review": {"prompt": "review.md", "persistent": False, "statuses": {"REVIEW_CLEAN", "CHANGES_REQUIRED", "BLOCKED"}},
 }
@@ -24,6 +24,7 @@ AGENTS = {
 RESULT_MARKER = "HERMES_RESULT="
 DEFAULT_AGENT_TIMEOUT_SECONDS = 1800
 DEFAULT_REPOSITORY_COMMAND_TIMEOUT_SECONDS = 60
+MAX_EXTERNAL_EVIDENCE_CHARS = 12000
 TASK_REVIEW_FIELDS = (
     "evidence_and_root_cause",
     "clearer_requirement",
@@ -84,6 +85,7 @@ def _load_state(path: Path, workflow_id: str) -> dict:
             "pending": None,
             "review_certification": None,
             "task_review_clean_checkpoint": None,
+            "external_verification": None,
         }
     state = json.loads(path.read_text(encoding="utf-8"))
     if state.get("workflow_id") not in (None, workflow_id):
@@ -103,6 +105,7 @@ def _load_state(path: Path, workflow_id: str) -> dict:
     state.setdefault("pending", None)
     state.setdefault("review_certification", None)
     state.setdefault("task_review_clean_checkpoint", None)
+    state.setdefault("external_verification", None)
     return state
 
 
@@ -478,7 +481,14 @@ def _parse_output(stdout: str) -> tuple[str | None, dict]:
     raise InvalidAgentResult("Codex output did not contain HERMES_RESULT")
 
 
-def _build_prompt(role_text: str, workflow_id: str, task: str, include_role: bool) -> str:
+def _build_prompt(
+    role_text: str,
+    workflow_id: str,
+    task: str,
+    include_role: bool,
+    *,
+    external_verification: dict | None = None,
+) -> str:
     parts = []
     if include_role:
         parts.append(role_text.strip())
@@ -488,6 +498,17 @@ def _build_prompt(role_text: str, workflow_id: str, task: str, include_role: boo
             f"Workflow: {workflow_id}",
             "Current task:",
             task.strip(),
+        ]
+    )
+    if external_verification is not None:
+        parts.extend(
+            [
+                "Preserved required external-verification evidence (Executor-owned workflow context):",
+                json.dumps(external_verification, indent=2, ensure_ascii=False, sort_keys=True),
+            ]
+        )
+    parts.extend(
+        [
             "",
             "Finish your final response with exactly one machine-readable line starting with HERMES_RESULT= followed by a JSON object containing at least a status field.",
         ]
@@ -504,6 +525,66 @@ def _require_nonempty_text(result: dict, field: str, context: str) -> None:
 def _has_nonempty_text(result: dict, field: str) -> bool:
     value = result.get(field)
     return isinstance(value, str) and bool(value.strip())
+
+
+def _external_verification_request(
+    value: dict,
+    context: str,
+    *,
+    require_expected_head: bool = False,
+) -> dict:
+    if not isinstance(value, dict):
+        raise InvalidAgentResult(f"{context} external verification must be an object")
+    request = {}
+    for field in ("command", "boundary", "reason"):
+        field_value = value.get(field)
+        if not isinstance(field_value, str) or not field_value.strip():
+            raise InvalidAgentResult(f"{context} must include non-empty {field}")
+        request[field] = field_value.strip()
+    if require_expected_head:
+        expected_head = value.get("expected_head")
+        if not isinstance(expected_head, str) or not expected_head.strip():
+            raise InvalidAgentResult(f"{context} must include non-empty expected_head")
+        request["expected_head"] = expected_head.strip()
+    return request
+
+
+def _bounded_evidence_text(value) -> tuple[str, bool]:
+    if value is None:
+        text = ""
+    elif isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+    else:
+        text = str(value)
+    if len(text) <= MAX_EXTERNAL_EVIDENCE_CHARS:
+        return text, False
+    half = MAX_EXTERNAL_EVIDENCE_CHARS // 2
+    marker = "\n...[external verification output truncated]...\n"
+    return text[:half] + marker + text[-half:], True
+
+
+def _external_verification_head(evidence: dict) -> str | None:
+    if not isinstance(evidence, dict):
+        return None
+    if evidence.get("provenance") == "executor":
+        head = evidence.get("head")
+        return head.strip() if isinstance(head, str) and head.strip() else None
+    if evidence.get("provenance") == "externally_supplied":
+        request = evidence.get("request")
+        head = request.get("expected_head") if isinstance(request, dict) else None
+        return head.strip() if isinstance(head, str) and head.strip() else None
+    return None
+
+
+def _ensure_external_verification_current(state: dict, current_head: str, context: str) -> None:
+    evidence = state.get("external_verification")
+    if evidence is None:
+        return
+    evidence_head = _external_verification_head(evidence)
+    if not evidence_head or evidence_head != current_head:
+        raise InvalidAgentResult(
+            f"{context} requires required external verification evidence for the current HEAD"
+        )
 
 
 def _pending_payload_task(pending: dict) -> str:
@@ -612,6 +693,100 @@ def _release_consumed_handoff(state_file: Path, state: dict, consumed: bool) -> 
         _save_state(state_file, state)
 
 
+def invoke_external_verification(
+    *,
+    workflow_id: str,
+    repo: str | Path,
+    state_file: str | Path,
+    command_runner: Callable | None = None,
+    timeout_seconds: int = DEFAULT_AGENT_TIMEOUT_SECONDS,
+) -> dict:
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    repo = Path(repo).resolve()
+    if not repo.is_dir():
+        raise ValueError(f"repo is not a directory: {repo}")
+    _ensure_clean_worktree(repo)
+    repository_guard = _capture_repository_guard(repo)
+    state_file = Path(state_file)
+    state = _load_state(state_file, workflow_id)
+    pending = state.get("pending")
+    if not (
+        isinstance(pending, dict)
+        and pending.get("from") == "coordinator"
+        and pending.get("to") == "executor"
+        and isinstance(pending.get("payload"), dict)
+        and pending["payload"].get("status") == "VERIFY_EXTERNAL"
+    ):
+        raise InvalidAgentResult(
+            "external verification requires pending Coordinator -> Executor VERIFY_EXTERNAL ownership"
+        )
+    request = _external_verification_request(
+        pending["payload"], "Coordinator VERIFY_EXTERNAL"
+    )
+    _verify_dispatch_bridge(repo, pending, repository_guard["head"])
+    _publish_handoff_trace(
+        repo,
+        workflow_id,
+        pending,
+        head=repository_guard["head"],
+    )
+    before_status = _worktree_status(repo)
+    execution_status = "completed"
+    exit_status = None
+    stdout = ""
+    stderr = ""
+    try:
+        if command_runner is None:
+            completed = subprocess.run(
+                request["command"],
+                cwd=repo,
+                shell=True,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=timeout_seconds,
+            )
+        else:
+            completed = command_runner(request["command"], repo, timeout_seconds)
+        exit_status = completed.returncode
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+    except subprocess.TimeoutExpired as exc:
+        execution_status = "timeout"
+        stdout = exc.output or ""
+        stderr = exc.stderr or ""
+    except OSError as exc:
+        execution_status = "execution_error"
+        stderr = str(exc)
+
+    _verify_agent_did_not_mutate_repository(repo, repository_guard)
+    if _worktree_status(repo) != before_status:
+        raise AgentRepositoryMutationError(
+            "external verification command modified the worktree"
+        )
+
+    bounded_stdout, stdout_truncated = _bounded_evidence_text(stdout)
+    bounded_stderr, stderr_truncated = _bounded_evidence_text(stderr)
+    evidence = {
+        "status": "EXTERNAL_VERIFICATION_RESULT",
+        "request": request,
+        "provenance": "executor",
+        "head": repository_guard["head"],
+        "execution_status": execution_status,
+        "exit_status": exit_status,
+        "stdout": bounded_stdout,
+        "stderr": bounded_stderr,
+        "stdout_truncated": stdout_truncated,
+        "stderr_truncated": stderr_truncated,
+    }
+    state["external_verification"] = evidence
+    state["review_certification"] = None
+    state["pending"] = {"from": "executor", "to": "coordinator", "payload": evidence}
+    _save_state(state_file, state)
+    return evidence
+
+
 def invoke_agent(
     *,
     agent: str,
@@ -641,6 +816,16 @@ def invoke_agent(
     pending = state.get("pending")
     specialists = {"testing", "task_review", "review"}
 
+    if (
+        agent == "coordinator"
+        and isinstance(pending, dict)
+        and pending.get("from") == "coordinator"
+        and pending.get("to") == "executor"
+    ):
+        raise InvalidAgentResult(
+            "cannot invoke Coordinator while required external verification is pending on Executor"
+        )
+
     recovery_coordinator = (
         agent == "coordinator"
         and isinstance(pending, dict)
@@ -651,11 +836,32 @@ def invoke_agent(
     if agent == "coordinator" and isinstance(pending, dict) and pending.get("to") == "user":
         if not isinstance(task, str) or not task.strip():
             raise InvalidAgentResult("Coordinator resume from user requires a non-empty answer")
+        question_payload = pending.get("payload")
+        external_request = (
+            question_payload.get("external_verification")
+            if isinstance(question_payload, dict)
+            else None
+        )
         state["pending"] = {
             "from": "user",
             "to": "coordinator",
-            "payload": {"question": pending.get("payload"), "answer": task},
+            "payload": {"question": question_payload, "answer": task},
         }
+        if external_request is not None:
+            request = _external_verification_request(
+                external_request,
+                "Coordinator AWAIT_USER_DECISION external_verification",
+                require_expected_head=True,
+            )
+            bounded_answer, answer_truncated = _bounded_evidence_text(task)
+            state["external_verification"] = {
+                "status": "EXTERNAL_VERIFICATION_RESULT",
+                "request": request,
+                "provenance": "externally_supplied",
+                "evidence": bounded_answer,
+                "evidence_truncated": answer_truncated,
+            }
+            state["review_certification"] = None
         _save_state(state_file, state)
         pending = state["pending"]
 
@@ -693,6 +899,9 @@ def invoke_agent(
     if formal_pending_dispatch:
         _verify_dispatch_bridge(repo, pending, repository_guard["head"])
         if agent == "review":
+            _ensure_external_verification_current(
+                state, repository_guard["head"], "Review dispatch"
+            )
             review_pr_body_hash = _current_pr_body_hash(repo)
         trace_checkpoint = None
         if pending.get("to") == "task_review":
@@ -729,6 +938,9 @@ def invoke_agent(
         workflow_id=workflow_id,
         task=effective_task,
         include_role=session_id is None,
+        external_verification=(
+            state.get("external_verification") if agent == "review" else None
+        ),
     )
     try:
         completed = (
@@ -821,6 +1033,7 @@ def invoke_agent(
             if next_agent == "task_review":
                 state["task_review_clean_checkpoint"] = None
                 state["review_certification"] = None
+                state["external_verification"] = None
                 _ensure_read_only_worktree(repo, "Coordinator task-review handoff")
             elif not state.get("task_review_clean_checkpoint"):
                 raise InvalidAgentResult(
@@ -856,7 +1069,20 @@ def invoke_agent(
                 raise InvalidAgentResult(
                     f"Coordinator status {status!r} must not include next_agent"
                 )
-            if status == "COMPLETED":
+            if status == "VERIFY_EXTERNAL":
+                if not state.get("task_review_clean_checkpoint"):
+                    raise InvalidAgentResult(
+                        "Coordinator VERIFY_EXTERNAL requires TASK_REVIEW_CLEAN"
+                    )
+                _external_verification_request(result, "Coordinator VERIFY_EXTERNAL")
+                state["external_verification"] = None
+                state["review_certification"] = None
+                state["pending"] = {
+                    "from": "coordinator",
+                    "to": "executor",
+                    "payload": result,
+                }
+            elif status == "COMPLETED":
                 _require_nonempty_text(result, "report", "Coordinator COMPLETED")
                 if recovery_coordinator:
                     raise InvalidAgentResult(
@@ -879,6 +1105,29 @@ def invoke_agent(
                     raise InvalidAgentResult(
                         "Coordinator recovery cannot await user decision while a specialist handoff is unresolved"
                     )
+                external_request = result.get("external_verification")
+                if external_request is not None:
+                    if not state.get("task_review_clean_checkpoint"):
+                        raise InvalidAgentResult(
+                            "Coordinator external verification request requires TASK_REVIEW_CLEAN"
+                        )
+                    request = _external_verification_request(
+                        external_request,
+                        "Coordinator AWAIT_USER_DECISION external_verification",
+                        require_expected_head=True,
+                    )
+                    if request["expected_head"] != repository_guard["head"]:
+                        raise InvalidAgentResult(
+                            "Coordinator AWAIT_USER_DECISION external_verification expected_head must match current HEAD"
+                        )
+                    _ensure_clean_worktree(repo)
+                    _verify_dispatch_bridge(
+                        repo,
+                        {"from": "coordinator", "to": "user", "payload": result},
+                        repository_guard["head"],
+                    )
+                    state["external_verification"] = None
+                    state["review_certification"] = None
                 state["pending"] = {"from": "coordinator", "to": "user", "payload": result}
             elif status == "AWAIT_USER_MERGE":
                 _require_nonempty_text(result, "reviewed_head", "Coordinator AWAIT_USER_MERGE")
@@ -899,6 +1148,9 @@ def invoke_agent(
                 certification = state.get("review_certification")
                 reviewed_head = result["reviewed_head"].strip()
                 current_head = repository_guard["head"]
+                _ensure_external_verification_current(
+                    state, current_head, "Coordinator AWAIT_USER_MERGE"
+                )
                 certified_head = certification.get("head") if isinstance(certification, dict) else None
                 if not certified_head or reviewed_head != certified_head or reviewed_head != current_head:
                     _release_consumed_handoff(state_file, state, consumed_result_handoff)
@@ -1014,10 +1266,11 @@ def _safe_workflow_name(value: str) -> str:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--agent", required=True, choices=tuple(AGENTS))
+    parser.add_argument("--agent", choices=tuple(AGENTS))
+    parser.add_argument("--run-external-verification", action="store_true")
     parser.add_argument("--workflow", required=True)
     parser.add_argument("--repo", required=True)
-    parser.add_argument("--task", required=True)
+    parser.add_argument("--task", default="")
     parser.add_argument("--state-file")
     parser.add_argument("--prompt-dir")
     parser.add_argument(
@@ -1027,6 +1280,10 @@ def main(argv=None) -> int:
         help=f"Codex subprocess timeout in seconds (default: {DEFAULT_AGENT_TIMEOUT_SECONDS})",
     )
     args = parser.parse_args(argv)
+    if bool(args.agent) == bool(args.run_external_verification):
+        parser.error("specify exactly one of --agent or --run-external-verification")
+    if args.agent and not args.task.strip():
+        parser.error("--task is required with --agent")
 
     root = Path(__file__).resolve().parent
     repo = Path(args.repo).resolve()
@@ -1036,15 +1293,23 @@ def main(argv=None) -> int:
     prompt_dir = Path(args.prompt_dir) if args.prompt_dir else root / "prompts"
 
     try:
-        result = invoke_agent(
-            agent=args.agent,
-            workflow_id=args.workflow,
-            repo=repo,
-            task=args.task,
-            state_file=state_file,
-            prompt_dir=prompt_dir,
-            timeout_seconds=args.timeout_seconds,
-        )
+        if args.run_external_verification:
+            result = invoke_external_verification(
+                workflow_id=args.workflow,
+                repo=repo,
+                state_file=state_file,
+                timeout_seconds=args.timeout_seconds,
+            )
+        else:
+            result = invoke_agent(
+                agent=args.agent,
+                workflow_id=args.workflow,
+                repo=repo,
+                task=args.task,
+                state_file=state_file,
+                prompt_dir=prompt_dir,
+                timeout_seconds=args.timeout_seconds,
+            )
     except MergePrHeadMismatch as exc:
         error = {
             "status": "ERROR",

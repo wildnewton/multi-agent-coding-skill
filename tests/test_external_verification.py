@@ -354,6 +354,46 @@ class ExternalVerificationTests(unittest.TestCase):
             self.invoke_agent("review", review)
         self.assertEqual(review.calls, [])
 
+    def test_stale_external_evidence_at_merge_releases_consumed_review_result(self):
+        head = self._git("rev-parse", "HEAD").stdout.strip()
+        stale_evidence = {
+            "status": "EXTERNAL_VERIFICATION_RESULT",
+            "request": {
+                "command": "pytest -m live",
+                "boundary": "real external boundary",
+                "reason": "required acceptance evidence",
+            },
+            "provenance": "executor",
+            "head": "stale-head",
+            "execution_status": "completed",
+            "exit_status": 0,
+            "stdout": "pass",
+            "stderr": "",
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
+        self.write_state(
+            pending={
+                "from": "review",
+                "to": "coordinator",
+                "payload": {"status": "REVIEW_CLEAN", "verdict": "APPROVE"},
+            },
+            external_verification=stale_evidence,
+            review_certification={"head": head, "pr_body_hash": "body"},
+        )
+        merge_result = {
+            "status": "AWAIT_USER_MERGE",
+            "summary": "ready",
+            "reviewed_head": head,
+            "draft": False,
+        }
+        coordinator = FakeAgentRunner(
+            [codex_stdout("C25", "HERMES_RESULT=" + json.dumps(merge_result))]
+        )
+        with self.assertRaisesRegex(run_codex.InvalidAgentResult, "external verification.*current HEAD"):
+            self.invoke_agent("coordinator", coordinator)
+        self.assertIsNone(self.state()["pending"])
+
 
 if __name__ == "__main__":
     unittest.main()

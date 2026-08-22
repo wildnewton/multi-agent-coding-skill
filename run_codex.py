@@ -876,10 +876,18 @@ def invoke_agent(
             if isinstance(question_payload, dict)
             else None
         )
+        unresolved_request = (
+            question_payload.get("unresolved_external_verification")
+            if isinstance(question_payload, dict)
+            else None
+        )
+        user_payload = {"question": question_payload, "answer": task}
+        if unresolved_request is not None and external_request is None:
+            user_payload["unresolved_external_verification"] = unresolved_request
         state["pending"] = {
             "from": "user",
             "to": "coordinator",
-            "payload": {"question": question_payload, "answer": task},
+            "payload": user_payload,
         }
         if external_request is not None:
             request = _external_verification_request(
@@ -901,6 +909,7 @@ def invoke_agent(
 
     effective_task = task
     consumed_result_handoff = False
+    unresolved_external_request = None
     task_review_checkpoint = None
     review_pr_body_hash = None
 
@@ -924,6 +933,15 @@ def invoke_agent(
             raise InvalidAgentResult("Coordinator pending result payload must be an object")
         effective_task = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         consumed_result_handoff = True
+        if pending.get("from") == "executor" and payload.get("status") == "EXTERNAL_VERIFICATION_UNAVAILABLE":
+            unresolved_external_request = _external_verification_request(
+                payload.get("request"), "Executor EXTERNAL_VERIFICATION_UNAVAILABLE"
+            )
+        elif pending.get("from") == "user" and payload.get("unresolved_external_verification") is not None:
+            unresolved_external_request = _external_verification_request(
+                payload.get("unresolved_external_verification"),
+                "User decision unresolved external verification",
+            )
 
     formal_pending_dispatch = (
         isinstance(pending, dict)
@@ -1019,6 +1037,24 @@ def invoke_agent(
         if "commit" in result:
             raise InvalidAgentResult(
                 "agents must not include commit; the orchestration layer owns git commit creation"
+            )
+        if agent == "coordinator" and unresolved_external_request is not None:
+            if status == "HANDOFF":
+                if result.get("next_agent") != "task_review":
+                    raise InvalidAgentResult(
+                        "Coordinator unresolved required external verification may only hand off to Task Review"
+                    )
+            elif status not in {"VERIFY_EXTERNAL", "AWAIT_USER_DECISION", "BLOCKED"}:
+                raise InvalidAgentResult(
+                    "Coordinator unresolved required external verification must be retried, sent to the user, returned to Task Review, or blocked"
+                )
+        elif (
+            agent == "coordinator"
+            and status == "AWAIT_USER_DECISION"
+            and result.get("external_verification") is not None
+        ):
+            raise InvalidAgentResult(
+                "Coordinator structured external-verification fallback requires unresolved Hermes unavailability"
             )
         if agent in specialists and "next_agent" in result:
             raise InvalidAgentResult(f"agent {agent!r} is not allowed to choose next_agent")
@@ -1150,6 +1186,13 @@ def invoke_agent(
                         "Coordinator AWAIT_USER_DECISION external_verification",
                         require_expected_head=True,
                     )
+                    if (
+                        request["command"] != unresolved_external_request["command"]
+                        or request["boundary"] != unresolved_external_request["boundary"]
+                    ):
+                        raise InvalidAgentResult(
+                            "Coordinator structured external-verification fallback must preserve the unresolved command and boundary"
+                        )
                     if request["expected_head"] != repository_guard["head"]:
                         raise InvalidAgentResult(
                             "Coordinator AWAIT_USER_DECISION external_verification expected_head must match current HEAD"
@@ -1162,7 +1205,15 @@ def invoke_agent(
                     )
                     state["external_verification"] = None
                     state["review_certification"] = None
-                state["pending"] = {"from": "coordinator", "to": "user", "payload": result}
+                user_pending_payload = result
+                if unresolved_external_request is not None and external_request is None:
+                    user_pending_payload = dict(result)
+                    user_pending_payload["unresolved_external_verification"] = unresolved_external_request
+                state["pending"] = {
+                    "from": "coordinator",
+                    "to": "user",
+                    "payload": user_pending_payload,
+                }
             elif status == "AWAIT_USER_MERGE":
                 _require_nonempty_text(result, "reviewed_head", "Coordinator AWAIT_USER_MERGE")
                 if not state.get("task_review_clean_checkpoint"):

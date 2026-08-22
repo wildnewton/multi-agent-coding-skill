@@ -85,18 +85,32 @@ class ExternalVerificationTests(unittest.TestCase):
             runner=runner,
         )
 
-    def request_executor_verification(self):
+    def request_executor_verification(
+        self,
+        *,
+        command="python -c 'raise SystemExit(3)'",
+        boundary="real external service boundary",
+        reason="required acceptance evidence",
+    ):
         result = {
             "status": "VERIFY_EXTERNAL",
-            "command": "python -c 'raise SystemExit(3)'",
-            "boundary": "real external service boundary",
-            "reason": "required acceptance evidence",
+            "command": command,
+            "boundary": boundary,
+            "reason": reason,
         }
         runner = FakeAgentRunner(
             [codex_stdout("C25", "HERMES_RESULT=" + json.dumps(result))]
         )
         self.invoke_agent("coordinator", runner, task="implement issue 25")
         return result
+
+    def report_executor_unavailable(self, reason="Hermes host lacks required browser/network access"):
+        return run_codex.invoke_external_verification(
+            workflow_id="issue-25",
+            repo=self.repo,
+            state_file=self.state_file,
+            unavailable_reason=reason,
+        )
 
     def test_coordinator_can_assign_required_verification_to_executor(self):
         requested = self.request_executor_verification()
@@ -194,6 +208,42 @@ class ExternalVerificationTests(unittest.TestCase):
             {"from": "executor", "to": "coordinator", "payload": result},
         )
 
+    def test_unavailable_gate_blocks_review_across_user_decision(self):
+        self.request_executor_verification()
+        unavailable = self.report_executor_unavailable()
+        review_handoff = {
+            "status": "HANDOFF",
+            "next_agent": "review",
+            "task": "Review current HEAD.",
+            "reason": "GREEN is ready.",
+            "full_test_command": "python -m unittest",
+        }
+        with self.assertRaisesRegex(
+            run_codex.InvalidAgentResult, "unresolved required external verification"
+        ):
+            self.invoke_agent(
+                "coordinator",
+                FakeAgentRunner([codex_stdout("C25", "HERMES_RESULT=" + json.dumps(review_handoff))]),
+            )
+        self.assertEqual(self.state()["pending"]["payload"], unavailable)
+
+        decision = {
+            "status": "AWAIT_USER_DECISION",
+            "question": "Which environment should Hermes use for this required verification?",
+        }
+        self.invoke_agent(
+            "coordinator",
+            FakeAgentRunner([codex_stdout("C25", "HERMES_RESULT=" + json.dumps(decision))]),
+        )
+        with self.assertRaisesRegex(
+            run_codex.InvalidAgentResult, "unresolved required external verification"
+        ):
+            self.invoke_agent(
+                "coordinator",
+                FakeAgentRunner([codex_stdout("C25", "HERMES_RESULT=" + json.dumps(review_handoff))]),
+                task="Use the staging VPN host.",
+            )
+
     def test_executor_orchestration_failure_keeps_original_pending(self):
         requested = self.request_executor_verification()
 
@@ -287,14 +337,36 @@ class ExternalVerificationTests(unittest.TestCase):
             self.invoke_agent("coordinator", runner)
         self.assertEqual(runner.calls, [])
 
+    def test_structured_user_fallback_requires_unavailable_gate(self):
+        head = self._git("rev-parse", "HEAD").stdout.strip()
+        decision = {
+            "status": "AWAIT_USER_DECISION",
+            "question": "Run live verification elsewhere.",
+            "external_verification": {
+                "command": "pytest -m live",
+                "boundary": "real external boundary",
+                "reason": "external execution is needed",
+                "expected_head": head,
+            },
+        }
+        with self.assertRaisesRegex(run_codex.InvalidAgentResult, "unresolved Hermes unavailability"):
+            self.invoke_agent(
+                "coordinator",
+                FakeAgentRunner([codex_stdout("C25", "HERMES_RESULT=" + json.dumps(decision))]),
+            )
+
     def test_structured_user_fallback_preserves_external_provenance(self):
+        command = "pytest -q -m live tests/test_live_integration.py"
+        boundary = "real Playwright-backed official scraper boundary"
+        self.request_executor_verification(command=command, boundary=boundary)
+        self.report_executor_unavailable("Hermes-side capability evidence confirms Chromium is unavailable")
         head = self._git("rev-parse", "HEAD").stdout.strip()
         decision = {
             "status": "AWAIT_USER_DECISION",
             "question": "Run the live command in a Chromium-capable environment and return HEAD plus output.",
             "external_verification": {
-                "command": "pytest -q -m live tests/test_live_integration.py",
-                "boundary": "real Playwright-backed official scraper boundary",
+                "command": command,
+                "boundary": boundary,
                 "reason": "Hermes-side capability evidence confirms Chromium is unavailable",
                 "expected_head": head,
             },
@@ -333,12 +405,17 @@ class ExternalVerificationTests(unittest.TestCase):
         self.assertIn("00406A failed", review_prompt)
 
     def test_structured_user_fallback_requires_current_exact_head(self):
+        requested = self.request_executor_verification(
+            command="pytest -m live",
+            boundary="real external boundary",
+        )
+        self.report_executor_unavailable()
         decision = {
             "status": "AWAIT_USER_DECISION",
             "question": "Run live verification elsewhere.",
             "external_verification": {
-                "command": "pytest -m live",
-                "boundary": "real external boundary",
+                "command": requested["command"],
+                "boundary": requested["boundary"],
                 "reason": "local environment unavailable",
                 "expected_head": "stale-head",
             },

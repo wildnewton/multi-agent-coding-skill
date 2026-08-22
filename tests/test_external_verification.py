@@ -148,6 +148,23 @@ class ExternalVerificationTests(unittest.TestCase):
         self.assertIn("partial output", evidence["stdout"])
         self.assertEqual(self.state()["pending"]["from"], "executor")
 
+    def test_executor_command_execution_error_is_evidence(self):
+        self.request_executor_verification()
+
+        def error_runner(command, cwd, timeout_seconds):
+            raise OSError("browser executable unavailable")
+
+        evidence = run_codex.invoke_external_verification(
+            workflow_id="issue-25",
+            repo=self.repo,
+            state_file=self.state_file,
+            command_runner=error_runner,
+        )
+        self.assertEqual(evidence["execution_status"], "execution_error")
+        self.assertIsNone(evidence["exit_status"])
+        self.assertIn("browser executable unavailable", evidence["stderr"])
+        self.assertEqual(self.state()["pending"]["from"], "executor")
+
     def test_executor_orchestration_failure_keeps_original_pending(self):
         requested = self.request_executor_verification()
 
@@ -166,6 +183,71 @@ class ExternalVerificationTests(unittest.TestCase):
             self.state()["pending"],
             {"from": "coordinator", "to": "executor", "payload": requested},
         )
+
+    def test_executor_rejects_pr_head_behind_before_running_command(self):
+        requested = self.request_executor_verification()
+        calls = []
+
+        def command_runner(command, cwd, timeout_seconds):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+        with (
+            patch("run_codex._has_origin", return_value=True),
+            patch("run_codex._current_pr_number", return_value=37),
+            patch("run_codex._current_pr_head", return_value="stale-pr-head"),
+        ):
+            with self.assertRaisesRegex(run_codex.InvalidAgentResult, "actual PR HEAD"):
+                run_codex.invoke_external_verification(
+                    workflow_id="issue-25",
+                    repo=self.repo,
+                    state_file=self.state_file,
+                    command_runner=command_runner,
+                )
+        self.assertEqual(calls, [])
+        self.assertEqual(
+            self.state()["pending"],
+            {"from": "coordinator", "to": "executor", "payload": requested},
+        )
+
+    def test_external_result_audit_trace_does_not_publish_raw_output(self):
+        secret = "cookie=super-secret-value"
+        evidence = {
+            "status": "EXTERNAL_VERIFICATION_RESULT",
+            "request": {
+                "command": "pytest -m live",
+                "boundary": "real external boundary",
+                "reason": "required acceptance evidence",
+            },
+            "provenance": "executor",
+            "head": "abc123",
+            "execution_status": "completed",
+            "exit_status": 1,
+            "stdout": f"failure output {secret}",
+            "stderr": "diagnostic stderr",
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
+        handoff = {"from": "executor", "to": "coordinator", "payload": evidence}
+        gh_result = subprocess.CompletedProcess(["gh"], 0, stdout="", stderr="")
+        with (
+            patch("run_codex._has_origin", return_value=True),
+            patch("run_codex._current_pr_number", return_value=37),
+            patch("run_codex._gh", return_value=gh_result) as gh,
+        ):
+            run_codex._publish_handoff_trace(
+                self.repo,
+                "issue-25",
+                handoff,
+                head="abc123",
+            )
+        body = gh.call_args.args[-1]
+        self.assertNotIn(secret, body)
+        self.assertNotIn("failure output", body)
+        self.assertNotIn("diagnostic stderr", body)
+        self.assertIn('"execution_status": "completed"', body)
+        self.assertIn('"exit_status": 1', body)
+        self.assertIn('"head": "abc123"', body)
 
     def test_coordinator_cannot_bypass_pending_executor_ownership(self):
         self.request_executor_verification()
@@ -239,7 +321,7 @@ class ExternalVerificationTests(unittest.TestCase):
             )
 
     def test_head_change_makes_preserved_evidence_stale_for_review(self):
-        requested = self.request_executor_verification()
+        self.request_executor_verification()
 
         def command_runner(command, cwd, timeout_seconds):
             return subprocess.CompletedProcess(command, 0, stdout="pass", stderr="")

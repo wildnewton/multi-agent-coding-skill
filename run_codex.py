@@ -234,6 +234,22 @@ def _current_pr_body_hash(repo: Path) -> str | None:
     return hashlib.sha256(completed.stdout.encode("utf-8")).hexdigest()
 
 
+def _handoff_trace_payload(from_actor: str, payload: dict) -> dict:
+    if from_actor != "executor" or payload.get("status") != "EXTERNAL_VERIFICATION_RESULT":
+        return payload
+    safe_fields = (
+        "status",
+        "request",
+        "provenance",
+        "head",
+        "execution_status",
+        "exit_status",
+        "stdout_truncated",
+        "stderr_truncated",
+    )
+    return {field: payload[field] for field in safe_fields if field in payload}
+
+
 def _publish_handoff_trace(
     repo: Path,
     workflow_id: str,
@@ -249,6 +265,7 @@ def _publish_handoff_trace(
     payload = handoff.get("payload")
     if not isinstance(payload, dict):
         raise InvalidAgentResult("handoff trace requires an object payload")
+    trace_payload = _handoff_trace_payload(from_actor, payload)
 
     task_review_trace = "task_review" in {from_actor, to_actor}
     pr_number = None if task_review_trace else _current_pr_number(repo)
@@ -271,7 +288,7 @@ def _publish_handoff_trace(
         [
             "",
             "```json",
-            json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True),
+            json.dumps(trace_payload, indent=2, ensure_ascii=False, sort_keys=True),
             "```",
         ]
     )

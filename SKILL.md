@@ -25,8 +25,6 @@ Use this skill when the user asks Hermes to implement a code change with the mul
 
 Only Coordinator chooses semantic routing. Coordinator and Testing persist per workflow; every Task Review and Review is fresh.
 
-When a role responsibility or ownership boundary changes, check all four prompt Role Maps plus the relevant `SKILL.md` ownership/workflow wording for semantic consistency; identical wording is not required.
-
 ## Core operating rules
 
 - Agents never mutate git or GitHub state. Task Review and Review are read-only; Coordinator is read-only until Task Review is clean.
@@ -94,7 +92,7 @@ Every formal agent-to-agent transition follows the same three steps:
 2. **BRIDGE — Executor -> Hermes**  
    Control returns to Hermes. Hermes performs only the git/GitHub mechanics needed before the next role: commit/push, targeted/full tests, CI, Draft PR creation/update, or PR metadata. If none are needed, this is a no-op.
 3. **DISPATCH — Hermes -> Executor -> To Agent**  
-   Hermes invokes the pending receiver. Executor re-checks the legal receiver and clean dispatch state, and once implementation is in PR phase also requires the PR to exist with actual PR HEAD equal to local HEAD. It then publishes the formal handoff trace using the actual dispatch HEAD/location and invokes the To Agent from the exact `pending.payload`.
+   Hermes invokes the pending receiver. Executor re-checks the legal receiver and clean dispatch state, and once implementation is in PR phase also requires the PR to exist with actual PR HEAD equal to local HEAD. It then publishes the formal handoff trace using the actual dispatch HEAD/location and invokes the To Agent from the exact pending payload.
 
 This cycle uses the existing single `pending`; do not add a phase flag, bridge-complete flag, handoff ID, or second pending object.
 

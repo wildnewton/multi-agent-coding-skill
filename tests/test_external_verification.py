@@ -182,7 +182,10 @@ class ExternalVerificationTests(unittest.TestCase):
         )
         self.assertEqual(calls, [])
         self.assertEqual(result["status"], "EXTERNAL_VERIFICATION_UNAVAILABLE")
-        self.assertEqual(result["request"], requested)
+        self.assertEqual(
+            result["request"],
+            {key: requested[key] for key in ("command", "boundary", "reason")},
+        )
         self.assertEqual(result["head"], self._git("rev-parse", "HEAD").stdout.strip())
         state = self.state()
         self.assertIsNone(state["external_verification"])

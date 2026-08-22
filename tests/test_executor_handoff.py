@@ -317,6 +317,42 @@ class ExecutorHandoffTests(unittest.TestCase):
         self.assertNotIn("WRONG RECONSTRUCTED ANSWER", prompt)
         self.assertEqual(self.state()["pending"]["to"], "testing")
 
+    def test_await_user_merge_follow_up_resumes_coordinator(self):
+        state = self.state()
+        state["pending"] = {
+            "from": "coordinator",
+            "to": "user",
+            "payload": {
+                "status": "AWAIT_USER_MERGE",
+                "summary": "PR is merge-ready",
+                "reviewed_head": "reviewed-sha",
+                "draft": False,
+            },
+        }
+        self.state_file.write_text(json.dumps(state), encoding="utf-8")
+
+        handoff = "HERMES_RESULT=" + json.dumps(
+            {
+                "status": "HANDOFF",
+                "next_agent": "testing",
+                "task": "Add focused coverage for the newly reported failure",
+                "reason": "The user requested more work on the same PR",
+            }
+        )
+        coordinator = FakeRunner([codex_stdout("C21", handoff)])
+        self.invoke(
+            "coordinator",
+            coordinator,
+            task="Investigate the still-failing CTBC live smoke cases",
+        )
+
+        prompt = coordinator.calls[0][2]
+        self.assertIn("AWAIT_USER_MERGE", prompt)
+        self.assertIn("reviewed-sha", prompt)
+        self.assertIn("Investigate the still-failing CTBC live smoke cases", prompt)
+        self.assertEqual(self.state()["workflow_id"], "issue-21")
+        self.assertEqual(self.state()["pending"]["to"], "testing")
+
     def test_review_certification_binds_pr_body_hash_and_stale_body_blocks_merge(self):
         head = self._git("rev-parse", "HEAD").stdout.strip()
         review_handoff = "HERMES_RESULT=" + json.dumps(

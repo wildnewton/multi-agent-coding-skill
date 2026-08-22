@@ -1165,9 +1165,13 @@ def invoke_agent(
                 certification = state.get("review_certification")
                 reviewed_head = result["reviewed_head"].strip()
                 current_head = repository_guard["head"]
-                _ensure_external_verification_current(
-                    state, current_head, "Coordinator AWAIT_USER_MERGE"
-                )
+                try:
+                    _ensure_external_verification_current(
+                        state, current_head, "Coordinator AWAIT_USER_MERGE"
+                    )
+                except InvalidAgentResult:
+                    _release_consumed_handoff(state_file, state, consumed_result_handoff)
+                    raise
                 certified_head = certification.get("head") if isinstance(certification, dict) else None
                 if not certified_head or reviewed_head != certified_head or reviewed_head != current_head:
                     _release_consumed_handoff(state_file, state, consumed_result_handoff)

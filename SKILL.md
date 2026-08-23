@@ -19,7 +19,7 @@ Use this skill when the user asks Hermes to implement a code change with the mul
 - **Coordinator:** canonical task, requirement/scope, implementation/GREEN, finding triage, semantic routing, and merge-readiness judgment.
 - **Task Review:** fresh independent pre-implementation task certification.
 - **Testing:** RED intent, explicitly authorized test-only corrections, and test quality.
-- **Review:** fresh independent latest-HEAD PR review, including required external-verification evidence when present.
+- **Review:** fresh independent Review with an explicit scope: full code/test/PR review before required external verification, or evidence-only certification after it.
 - **Executor (`run_codex.py`):** deterministic handoff/state/audit mechanics and mechanical gates.
 - **Hermes:** user transport plus branch/commit/push/test/CI/PR/approved-merge mechanics, including host-side required external verification through the Executor.
 
@@ -49,29 +49,41 @@ Testing owns RED and explicitly routed `test_fix` work; Coordinator owns GREEN. 
 
 Classify test-looking runs by purpose, not command syntax or name. Ordinary deterministic targeted/full tests may be bridge mechanics. Ad-hoc live diagnostics may be run when otherwise permitted, but their output is diagnostic evidence only.
 
-### 4. Required external verification
+### 4. Review before required external verification
 
-Once a live/external run is required for acceptance, Review, or merge readiness, Coordinator must return `VERIFY_EXTERNAL`; direct ordinary terminal output cannot satisfy that gate. A Testing sandbox limitation on an already-existing suite does not make Testing its mechanical runner when no Testing-owned test/harness work remains.
+When GREEN and ordinary deterministic tests are ready, Coordinator sends `review_scope: "full"`. Full Review covers the normal requirement/scope, complete code/test diff, regressions, tests, and PR description. Required external-verification evidence is not required for this Review and is not part of its certification.
 
-Required external verification is one non-destructive command/suite against the committed candidate HEAD. Resolve the pending Executor action either by running it on the Hermes host or, if Hermes cannot safely/correctly do so, by reporting unavailability through the Executor. Agent sandbox limitations alone do not justify asking the user.
+If Full Review finds a blocking defect, route the correction through the normal Testing/GREEN path and run Full Review again on the changed HEAD. A clean Full Review certification stays attached to that HEAD and reviewed PR-description identity.
 
-Non-zero, timeout, and command-execution outcomes are evidence for Coordinator; Executor/orchestration failures remain workflow errors. Unavailability does not satisfy the gate. Externally supplied evidence is not mechanically attested. Do not inline secrets in verification commands; use existing environment/config. Any HEAD change makes earlier required external evidence stale.
+### 5. Required external verification
 
-### 5. User decisions
+Once a live/external run is required for acceptance or merge readiness, Coordinator may return `VERIFY_EXTERNAL` only after the current HEAD has clean Full Review. Direct ordinary terminal output cannot satisfy that gate. A Testing sandbox limitation on an already-existing suite does not make Testing its mechanical runner when no Testing-owned test/harness work remains.
+
+Required external verification is one non-destructive command/suite against the committed, fully reviewed candidate HEAD. Resolve the pending Executor action either by running it on the Hermes host or, if Hermes cannot safely/correctly do so, by reporting unavailability through the Executor. Agent sandbox limitations alone do not justify asking the user.
+
+Non-zero, timeout, and command-execution outcomes are evidence for Coordinator; Executor/orchestration failures remain workflow errors. Unavailability does not satisfy the gate. Externally supplied evidence is not mechanically attested. Do not inline secrets in verification commands; use existing environment/config.
+
+Requesting verification, reporting unavailability, or recording replacement evidence does not erase the Full Review certification while HEAD remains unchanged. Same-HEAD replacement external verification does not require another Full Review. A HEAD change invalidates the earlier Full Review for purposes of another required external run and makes prior external evidence stale.
+
+### 6. Evidence-only Review and merge
+
+After required external evidence is recorded for the unchanged fully reviewed HEAD, Coordinator sends `review_scope: "external_evidence"`. This Review certifies only the exact external-verification evidence: correct HEAD, command/boundary, provenance, execution/result, and whether the evidence proves the required verification passed. It must not re-review code, tests, coverage, implementation, the full diff, or PR-description content.
+
+The Full Review certification remains the code/test certification. Evidence-only `REVIEW_CLEAN` adds certification of the exact current external evidence; it does not replace the Full Review certification. If evidence is inconclusive or insufficient, retry same-HEAD verification as appropriate. If the run proves a current-change defect and HEAD changes, return to Full Review before rerunning external verification.
+
+Tasks with no required external verification go directly from clean Full Review to merge readiness and gain no second Review.
+
+After the required Review certification(s) are accepted, finish remaining ordinary tests/CI and mark the Draft PR ready when appropriate. Coordinator then makes the final merge-readiness judgment. On `AWAIT_USER_MERGE`, the Executor re-checks the current merge gates, including current Task Review/Full Review certification, PR/local HEAD consistency, PR-description identity, exact evidence-only certification when external verification is required, clean worktree, and `draft=false`.
+
+Never merge without explicit user approval. Merge with `reviewed_head` as the expected-HEAD precondition; if the PR HEAD moved, do not merge and return the mismatch evidence to Coordinator.
+
+### 7. User decisions
 
 On `AWAIT_USER_DECISION`, ask the user and pass the exact answer back through the same workflow. This path is available only when no specialist or Executor action remains unresolved. If Coordinator includes structured external-verification metadata because the user/operator must execute the run, return their result through the same workflow so the Executor preserves it as externally supplied evidence.
 
 When the workflow is pending on the User, classify the reply before acting. If an `AWAIT_USER_MERGE` reply explicitly approves merge, use the merge path. If it instead asks for more investigation, testing, or modification of the same task/PR, resume Coordinator with the exact reply; Hermes must not do that semantic work directly. An unrelated request must not consume or replace the pending workflow answer.
 
-### 6. Review and merge
-
-When GREEN and any required external evidence are ready, Coordinator sends fresh Review. Required external verification must be complete before the Review that certifies merge readiness.
-
-After `REVIEW_CLEAN` is accepted and before dispatching Review back to Coordinator, finish remaining ordinary tests/CI and mark the Draft PR ready when appropriate. Coordinator then makes the final merge-readiness judgment. On `AWAIT_USER_MERGE`, the Executor re-checks the current merge gates, including current Task Review/Review certification, PR/local HEAD consistency, PR-description identity, required external evidence, clean worktree, and `draft=false`.
-
-Never merge without explicit user approval. Merge with `reviewed_head` as the expected-HEAD precondition; if the PR HEAD moved, do not merge and return the mismatch evidence to Coordinator.
-
-### 7. Recover failures
+### 8. Recover failures
 
 `ERROR` is not an agent result; never reinterpret partial output as accepted work. Do not commit reported `unverified_artifacts`.
 

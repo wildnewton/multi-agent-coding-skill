@@ -47,16 +47,17 @@ Only Coordinator chooses semantic routing. Coordinator and Testing persist per w
 
 ## Invocation
 
-Agent invocation:
+Pending agent invocation, where semantic content already comes from `pending.payload`:
 
 ```bash
 python3 <skill-dir>/run_codex.py \
   --agent <coordinator|task_review|testing|review> \
   --workflow <workflow-id> \
   --repo <target-repo> \
-  --task '<initial user task, recovery evidence, or user answer>' \
   --timeout-seconds 1800
 ```
+
+For an initial Coordinator task, recovery evidence, or a user answer, add `--task '<fresh semantic input>'`.
 
 Pending required external verification is a mechanical Executor action invoked by Hermes on its host/environment:
 

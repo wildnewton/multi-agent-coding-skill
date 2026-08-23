@@ -323,27 +323,24 @@ python3 run_codex.py \
 python3 run_codex.py \
   --agent task_review \
   --workflow issue-123 \
-  --repo /path/to/target-repo \
-  --task 'dispatch pending handoff'
+  --repo /path/to/target-repo
 ```
 
 ```bash
 python3 run_codex.py \
   --agent testing \
   --workflow issue-123 \
-  --repo /path/to/target-repo \
-  --task 'dispatch pending handoff'
+  --repo /path/to/target-repo
 ```
 
 ```bash
 python3 run_codex.py \
   --agent review \
   --workflow issue-123 \
-  --repo /path/to/target-repo \
-  --task 'dispatch pending handoff'
+  --repo /path/to/target-repo
 ```
 
-specialist 的實際 task 來自持久化的 `pending.payload`；`--task` 對 specialist 只是 CLI 必填參數，不是新的 semantic task。`--task` 真正承載內容的情況主要是：
+pending specialist/result dispatch 的 semantic content 來自持久化的 `pending.payload`，不需要 `--task`。`--task` 真正承載 fresh semantic input 的情況是：
 
 - 初始 Coordinator user task；
 - recovery evidence；

@@ -867,6 +867,11 @@ def invoke_agent(
         and pending.get("to") in specialists
     )
 
+    if agent == "coordinator" and pending is None and (not isinstance(task, str) or not task.strip()):
+        raise InvalidAgentResult("initial Coordinator invocation requires a non-empty task")
+    if recovery_coordinator and (not isinstance(task, str) or not task.strip()):
+        raise InvalidAgentResult("Coordinator recovery requires non-empty evidence")
+
     if agent == "coordinator" and isinstance(pending, dict) and pending.get("to") == "user":
         if not isinstance(task, str) or not task.strip():
             raise InvalidAgentResult("Coordinator resume from user requires a non-empty answer")
@@ -1381,8 +1386,6 @@ def main(argv=None) -> int:
         parser.error(
             "specify exactly one of --agent, --run-external-verification, or --external-verification-unavailable"
         )
-    if args.agent and not args.task.strip():
-        parser.error("--task is required with --agent")
     if (
         args.external_verification_unavailable is not None
         and not args.external_verification_unavailable.strip()

@@ -101,7 +101,6 @@ def main(argv=None) -> int:
             "--agent", "testing",
             "--workflow", "long-running-invocation-smoke",
             "--repo", str(repo),
-            "--task", task,
             "--state-file", str(state_file),
             "--prompt-dir", str(skill_root / "prompts"),
             "--timeout-seconds", str(args.timeout_seconds),

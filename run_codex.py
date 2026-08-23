@@ -1423,9 +1423,13 @@ def invoke_agent(
                         state["review_certification"] = {
                             "head": repository_guard["head"],
                             "pr_body_hash": review_pr_body_hash,
-                            "external_verification_required": state.get("external_verification") is not None,
-                            "external_verification_digest": None,
                         }
+                        evidence = state.get("external_verification")
+                        if (
+                            evidence is not None
+                            and _external_verification_head(evidence) != repository_guard["head"]
+                        ):
+                            state["external_verification"] = None
                     else:
                         certification = _require_full_review_certification(
                             state, repository_guard["head"], "Evidence-only Review"

@@ -64,8 +64,8 @@ class InvocationFailureTests(unittest.TestCase):
     def argv(self, timeout="1800"):
         return [
             "--agent", "testing", "--workflow", "issue-9", "--repo", str(self.repo),
-            "--task", "external task is ignored", "--state-file", str(self.state_file),
-            "--prompt-dir", str(self.prompts), "--timeout-seconds", timeout,
+            "--state-file", str(self.state_file), "--prompt-dir", str(self.prompts),
+            "--timeout-seconds", timeout,
         ]
 
     def run_main_with(self, runner, *, timeout="1800"):

@@ -78,8 +78,6 @@ class ExternalVerificationTests(unittest.TestCase):
         return {
             "head": self._git("rev-parse", "HEAD").stdout.strip(),
             "pr_body_hash": None,
-            "external_verification_required": False,
-            "external_verification_digest": None,
         }
 
     def invoke_agent(self, agent, runner, task="external task"):
@@ -156,7 +154,7 @@ class ExternalVerificationTests(unittest.TestCase):
         self.invoke_agent("review", review)
         certification = self.state()["review_certification"]
         self.assertEqual(certification["head"], self.full_review_certification()["head"])
-        self.assertFalse(certification["external_verification_required"])
+        self.assertNotIn("external_verification_required", certification)
         self.assertNotIn("Preserved required external-verification evidence", review.calls[0][2])
 
     def test_full_review_ignores_stale_external_evidence(self):
@@ -190,6 +188,7 @@ class ExternalVerificationTests(unittest.TestCase):
         )
         self.invoke_agent("review", review)
         self.assertNotIn("stale-head", review.calls[0][2])
+        self.assertIsNone(self.state()["external_verification"])
 
     def test_evidence_only_review_rejects_full_test_metadata(self):
         evidence = {

@@ -125,10 +125,24 @@ class InvokeAgentTests(unittest.TestCase):
         testing = FakeRunner([codex_stdout("T52", TESTING_RESULT)])
         self.invoke("testing", testing)
         coordinator = FakeRunner([codex_stdout("C52", TESTING_HANDOFF)])
-        self.invoke("coordinator", coordinator)
+        self.invoke("coordinator", coordinator, task="")
         state = self.state()
         self.assertEqual(state["sessions"]["testing"], "T52")
         self.assertEqual(state["sessions"]["coordinator"], "C52")
+
+    def test_initial_coordinator_requires_nonempty_task(self):
+        self.write_state(clean=None)
+        runner = FakeRunner([codex_stdout("C", COMPLETED_RESULT)])
+        with self.assertRaisesRegex(InvalidAgentResult, "initial Coordinator invocation requires a non-empty task"):
+            self.invoke("coordinator", runner, task="")
+        self.assertEqual(runner.calls, [])
+
+    def test_recovery_coordinator_requires_nonempty_evidence(self):
+        self.prime_pending("testing")
+        runner = FakeRunner([codex_stdout("C", TESTING_HANDOFF)])
+        with self.assertRaisesRegex(InvalidAgentResult, "Coordinator recovery requires non-empty evidence"):
+            self.invoke("coordinator", runner, task="")
+        self.assertEqual(runner.calls, [])
 
     def test_review_always_starts_fresh(self):
         for expected in ("R1", "R2"):

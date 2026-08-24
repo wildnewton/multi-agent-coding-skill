@@ -1192,7 +1192,16 @@ def invoke_agent(
                         raise InvalidAgentResult(
                             "Coordinator full Review HANDOFF must include exactly one of full_test_command or full_test_unavailable_reason"
                         )
-                    state["review_certification"] = None
+                    prior_certification = state.get("review_certification")
+                    external_gate_required = (
+                        isinstance(prior_certification, dict)
+                        and "external_verification_digest" in prior_certification
+                    ) or state.get("external_verification") is not None
+                    state["review_certification"] = (
+                        {"external_verification_digest": None}
+                        if external_gate_required
+                        else None
+                    )
                 else:
                     if has_full_command or has_unavailable_reason:
                         raise InvalidAgentResult(
@@ -1418,11 +1427,19 @@ def invoke_agent(
                             "PR description changed during Review; fresh Review is required"
                         )
                     if review_scope == "full":
-                        state["review_certification"] = {
+                        prior_certification = state.get("review_certification")
+                        evidence = state.get("external_verification")
+                        external_gate_required = (
+                            isinstance(prior_certification, dict)
+                            and "external_verification_digest" in prior_certification
+                        ) or evidence is not None
+                        certification = {
                             "head": repository_guard["head"],
                             "pr_body_hash": review_pr_body_hash,
                         }
-                        evidence = state.get("external_verification")
+                        if external_gate_required:
+                            certification["external_verification_digest"] = None
+                        state["review_certification"] = certification
                         if (
                             evidence is not None
                             and _external_verification_head(evidence) != repository_guard["head"]

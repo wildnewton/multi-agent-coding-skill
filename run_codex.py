@@ -593,6 +593,14 @@ def _external_verification_head(evidence: dict) -> str | None:
     return None
 
 
+def _external_verification_digest(evidence: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def _ensure_external_verification_current(state: dict, current_head: str, context: str) -> None:
     evidence = state.get("external_verification")
     if evidence is None:
@@ -602,6 +610,34 @@ def _ensure_external_verification_current(state: dict, current_head: str, contex
         raise InvalidAgentResult(
             f"{context} requires required external verification evidence for the current HEAD"
         )
+
+
+def _require_external_verification_current(state: dict, current_head: str, context: str) -> dict:
+    evidence = state.get("external_verification")
+    if not isinstance(evidence, dict):
+        raise InvalidAgentResult(
+            f"{context} requires required external verification evidence for the current HEAD"
+        )
+    _ensure_external_verification_current(state, current_head, context)
+    return evidence
+
+
+def _review_scope(payload: dict) -> str:
+    scope = payload.get("review_scope", "full") if isinstance(payload, dict) else "full"
+    if scope not in {"full", "external_evidence"}:
+        raise InvalidAgentResult(
+            "Coordinator review HANDOFF review_scope must be 'full' or 'external_evidence'"
+        )
+    return scope
+
+
+def _require_full_review_certification(state: dict, current_head: str, context: str) -> dict:
+    certification = state.get("review_certification")
+    if not isinstance(certification, dict) or certification.get("head") != current_head:
+        raise InvalidAgentResult(
+            f"{context} requires clean Full Review certification for the current HEAD"
+        )
+    return certification
 
 
 def _pending_payload_task(pending: dict) -> str:
@@ -760,7 +796,9 @@ def invoke_external_verification(
             "reason": unavailable_reason.strip(),
         }
         state["external_verification"] = None
-        state["review_certification"] = None
+        certification = state.get("review_certification")
+        if isinstance(certification, dict):
+            certification["external_verification_digest"] = None
         state["pending"] = {"from": "executor", "to": "coordinator", "payload": result}
         _save_state(state_file, state)
         return result
@@ -815,7 +853,9 @@ def invoke_external_verification(
         "stderr_truncated": stderr_truncated,
     }
     state["external_verification"] = evidence
-    state["review_certification"] = None
+    certification = state.get("review_certification")
+    if isinstance(certification, dict):
+        certification["external_verification_digest"] = None
     state["pending"] = {"from": "executor", "to": "coordinator", "payload": evidence}
     _save_state(state_file, state)
     return evidence
@@ -908,7 +948,9 @@ def invoke_agent(
                 "evidence": bounded_answer,
                 "evidence_truncated": answer_truncated,
             }
-            state["review_certification"] = None
+            certification = state.get("review_certification")
+            if isinstance(certification, dict):
+                certification["external_verification_digest"] = None
         _save_state(state_file, state)
         pending = state["pending"]
 
@@ -917,6 +959,7 @@ def invoke_agent(
     unresolved_external_request = None
     task_review_checkpoint = None
     review_pr_body_hash = None
+    review_scope = None
 
     if agent in specialists:
         if not isinstance(pending, dict) or pending.get("to") != agent:
@@ -956,10 +999,19 @@ def invoke_agent(
     if formal_pending_dispatch:
         _verify_dispatch_bridge(repo, pending, repository_guard["head"])
         if agent == "review":
-            _ensure_external_verification_current(
-                state, repository_guard["head"], "Review dispatch"
-            )
+            review_scope = _review_scope(pending.get("payload"))
             review_pr_body_hash = _current_pr_body_hash(repo)
+            if review_scope == "external_evidence":
+                certification = _require_full_review_certification(
+                    state, repository_guard["head"], "Evidence-only Review dispatch"
+                )
+                if certification.get("pr_body_hash") != review_pr_body_hash:
+                    raise InvalidAgentResult(
+                        "Evidence-only Review dispatch requires the PR description certified by Full Review"
+                    )
+                _require_external_verification_current(
+                    state, repository_guard["head"], "Evidence-only Review dispatch"
+                )
         trace_checkpoint = None
         if pending.get("to") == "task_review":
             trace_checkpoint = task_review_checkpoint
@@ -996,7 +1048,9 @@ def invoke_agent(
         task=effective_task,
         include_role=session_id is None,
         external_verification=(
-            state.get("external_verification") if agent == "review" else None
+            state.get("external_verification")
+            if agent == "review" and review_scope == "external_evidence"
+            else None
         ),
     )
     try:
@@ -1130,13 +1184,41 @@ def invoke_agent(
                     )
 
             if next_agent == "review":
+                review_scope = _review_scope(result)
                 has_full_command = _has_nonempty_text(result, "full_test_command")
                 has_unavailable_reason = _has_nonempty_text(result, "full_test_unavailable_reason")
-                if has_full_command == has_unavailable_reason:
-                    raise InvalidAgentResult(
-                        "Coordinator review HANDOFF must include exactly one of full_test_command or full_test_unavailable_reason"
+                if review_scope == "full":
+                    if has_full_command == has_unavailable_reason:
+                        raise InvalidAgentResult(
+                            "Coordinator full Review HANDOFF must include exactly one of full_test_command or full_test_unavailable_reason"
+                        )
+                    prior_certification = state.get("review_certification")
+                    external_gate_required = (
+                        isinstance(prior_certification, dict)
+                        and "external_verification_digest" in prior_certification
+                    ) or state.get("external_verification") is not None
+                    state["review_certification"] = (
+                        {"external_verification_digest": None}
+                        if external_gate_required
+                        else None
                     )
-                state["review_certification"] = None
+                else:
+                    if has_full_command or has_unavailable_reason:
+                        raise InvalidAgentResult(
+                            "Coordinator evidence-only Review HANDOFF must not include full-test metadata"
+                        )
+                    certification = _require_full_review_certification(
+                        state, repository_guard["head"], "Coordinator evidence-only Review HANDOFF"
+                    )
+                    current_body_hash = _current_pr_body_hash(repo)
+                    if certification.get("pr_body_hash") != current_body_hash:
+                        raise InvalidAgentResult(
+                            "Coordinator evidence-only Review HANDOFF requires the PR description certified by Full Review"
+                        )
+                    _require_external_verification_current(
+                        state, repository_guard["head"], "Coordinator evidence-only Review HANDOFF"
+                    )
+                    certification["external_verification_digest"] = None
 
             state["pending"] = {"from": "coordinator", "to": next_agent, "payload": result}
         else:
@@ -1150,8 +1232,16 @@ def invoke_agent(
                         "Coordinator VERIFY_EXTERNAL requires TASK_REVIEW_CLEAN"
                     )
                 _external_verification_request(result, "Coordinator VERIFY_EXTERNAL")
+                certification = _require_full_review_certification(
+                    state, repository_guard["head"], "Coordinator VERIFY_EXTERNAL"
+                )
+                current_body_hash = _current_pr_body_hash(repo)
+                if certification.get("pr_body_hash") != current_body_hash:
+                    raise InvalidAgentResult(
+                        "Coordinator VERIFY_EXTERNAL requires the PR description certified by Full Review"
+                    )
+                certification["external_verification_digest"] = None
                 state["external_verification"] = None
-                state["review_certification"] = None
                 state["pending"] = {
                     "from": "coordinator",
                     "to": "executor",
@@ -1209,7 +1299,11 @@ def invoke_agent(
                         repository_guard["head"],
                     )
                     state["external_verification"] = None
-                    state["review_certification"] = None
+                    certification = _require_full_review_certification(
+                        state, repository_guard["head"],
+                        "Coordinator AWAIT_USER_DECISION external_verification",
+                    )
+                    certification["external_verification_digest"] = None
                 user_pending_payload = result
                 if unresolved_external_request is not None and external_request is None:
                     user_pending_payload = dict(result)
@@ -1238,13 +1332,6 @@ def invoke_agent(
                 certification = state.get("review_certification")
                 reviewed_head = result["reviewed_head"].strip()
                 current_head = repository_guard["head"]
-                try:
-                    _ensure_external_verification_current(
-                        state, current_head, "Coordinator AWAIT_USER_MERGE"
-                    )
-                except InvalidAgentResult:
-                    _release_consumed_handoff(state_file, state, consumed_result_handoff)
-                    raise
                 certified_head = certification.get("head") if isinstance(certification, dict) else None
                 if not certified_head or reviewed_head != certified_head or reviewed_head != current_head:
                     _release_consumed_handoff(state_file, state, consumed_result_handoff)
@@ -1256,8 +1343,22 @@ def invoke_agent(
                 if current_body_hash != certified_body_hash:
                     _release_consumed_handoff(state_file, state, consumed_result_handoff)
                     raise InvalidAgentResult(
-                        "Coordinator AWAIT_USER_MERGE requires the current PR description to match REVIEW_CLEAN certification"
+                        "Coordinator AWAIT_USER_MERGE requires the current PR description to match Full Review certification"
                     )
+                if "external_verification_digest" in certification or state.get("external_verification") is not None:
+                    try:
+                        evidence = _require_external_verification_current(
+                            state, current_head, "Coordinator AWAIT_USER_MERGE"
+                        )
+                    except InvalidAgentResult:
+                        _release_consumed_handoff(state_file, state, consumed_result_handoff)
+                        raise
+                    expected_digest = certification.get("external_verification_digest")
+                    if not expected_digest or expected_digest != _external_verification_digest(evidence):
+                        _release_consumed_handoff(state_file, state, consumed_result_handoff)
+                        raise InvalidAgentResult(
+                            "Coordinator AWAIT_USER_MERGE requires Evidence-only Review certification for the current external verification"
+                        )
                 current_pr_head = _current_pr_head(repo)
                 if current_pr_head != reviewed_head:
                     _release_consumed_handoff(state_file, state, consumed_result_handoff)
@@ -1317,12 +1418,46 @@ def invoke_agent(
             )
     elif agent == "review":
         if status in {"REVIEW_CLEAN", "CHANGES_REQUIRED"}:
+            review_scope = _review_scope(pending.get("payload"))
             if status == "REVIEW_CLEAN":
                 try:
                     current_pr_body_hash = _current_pr_body_hash(repo)
                     if current_pr_body_hash != review_pr_body_hash:
                         raise InvalidAgentResult(
                             "PR description changed during Review; fresh Review is required"
+                        )
+                    if review_scope == "full":
+                        prior_certification = state.get("review_certification")
+                        evidence = state.get("external_verification")
+                        external_gate_required = (
+                            isinstance(prior_certification, dict)
+                            and "external_verification_digest" in prior_certification
+                        ) or evidence is not None
+                        certification = {
+                            "head": repository_guard["head"],
+                            "pr_body_hash": review_pr_body_hash,
+                        }
+                        if external_gate_required:
+                            certification["external_verification_digest"] = None
+                        state["review_certification"] = certification
+                        if (
+                            evidence is not None
+                            and _external_verification_head(evidence) != repository_guard["head"]
+                        ):
+                            state["external_verification"] = None
+                    else:
+                        certification = _require_full_review_certification(
+                            state, repository_guard["head"], "Evidence-only Review"
+                        )
+                        if certification.get("pr_body_hash") != review_pr_body_hash:
+                            raise InvalidAgentResult(
+                                "Evidence-only Review requires the PR description certified by Full Review"
+                            )
+                        evidence = _require_external_verification_current(
+                            state, repository_guard["head"], "Evidence-only Review"
+                        )
+                        certification["external_verification_digest"] = _external_verification_digest(
+                            evidence
                         )
                 except InvalidAgentResult as exc:
                     _publish_specialist_failure_trace(
@@ -1333,10 +1468,6 @@ def invoke_agent(
                         reason=f"Mechanical verification failed: {exc}",
                     )
                     raise
-                state["review_certification"] = {
-                    "head": repository_guard["head"],
-                    "pr_body_hash": review_pr_body_hash,
-                }
             state["pending"] = _reverse_handoff(agent, result)
         elif status == "BLOCKED":
             summary = result.get("summary")

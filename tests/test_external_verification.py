@@ -45,7 +45,7 @@ class ExternalVerificationTests(unittest.TestCase):
         (self.repo / "README.md").write_text("clean\n", encoding="utf-8")
         self._git("add", "README.md")
         self._git("commit", "-m", "initial")
-        self.write_state()
+        self.write_state(review_certification=self.full_review_certification())
 
     def _git(self, *args):
         return subprocess.run(
@@ -73,6 +73,12 @@ class ExternalVerificationTests(unittest.TestCase):
 
     def state(self):
         return json.loads(self.state_file.read_text(encoding="utf-8"))
+
+    def full_review_certification(self):
+        return {
+            "head": self._git("rev-parse", "HEAD").stdout.strip(),
+            "pr_body_hash": None,
+        }
 
     def invoke_agent(self, agent, runner, task="external task"):
         return run_codex.invoke_agent(
@@ -112,6 +118,289 @@ class ExternalVerificationTests(unittest.TestCase):
             unavailable_reason=reason,
         )
 
+    def test_external_verification_requires_full_review_certification(self):
+        self.write_state(review_certification=None)
+        result = {
+            "status": "VERIFY_EXTERNAL",
+            "command": "pytest -m live",
+            "boundary": "real external boundary",
+            "reason": "required acceptance evidence",
+        }
+        with self.assertRaisesRegex(
+            run_codex.InvalidAgentResult, "clean Full Review certification"
+        ):
+            self.invoke_agent(
+                "coordinator",
+                FakeAgentRunner([codex_stdout("C25", "HERMES_RESULT=" + json.dumps(result))]),
+            )
+
+    def test_full_review_can_run_without_external_evidence(self):
+        self.write_state(review_certification=None, external_verification=None)
+        handoff = {
+            "status": "HANDOFF",
+            "next_agent": "review",
+            "review_scope": "full",
+            "task": "Review the full code/test diff.",
+            "reason": "GREEN is ready before external verification.",
+            "full_test_command": "python -m unittest",
+        }
+        self.invoke_agent(
+            "coordinator",
+            FakeAgentRunner([codex_stdout("C25", "HERMES_RESULT=" + json.dumps(handoff))]),
+        )
+        review = FakeAgentRunner(
+            [codex_stdout("R25", 'HERMES_RESULT={"status":"REVIEW_CLEAN"}')]
+        )
+        self.invoke_agent("review", review)
+        certification = self.state()["review_certification"]
+        self.assertEqual(certification["head"], self.full_review_certification()["head"])
+        self.assertNotIn("external_verification_digest", certification)
+        self.assertNotIn("Preserved required external-verification evidence", review.calls[0][2])
+
+    def test_full_review_ignores_stale_external_evidence(self):
+        stale_evidence = {
+            "status": "EXTERNAL_VERIFICATION_RESULT",
+            "request": {"command": "live", "boundary": "service", "reason": "required"},
+            "provenance": "executor",
+            "head": "stale-head",
+            "execution_status": "completed",
+            "exit_status": 0,
+            "stdout": "pass",
+            "stderr": "",
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
+        self.write_state(review_certification=None, external_verification=stale_evidence)
+        handoff = {
+            "status": "HANDOFF",
+            "next_agent": "review",
+            "review_scope": "full",
+            "task": "Review the new HEAD code/tests.",
+            "reason": "HEAD changed; stale live evidence must not block code review.",
+            "full_test_command": "python -m unittest",
+        }
+        self.invoke_agent(
+            "coordinator",
+            FakeAgentRunner([codex_stdout("C25", "HERMES_RESULT=" + json.dumps(handoff))]),
+        )
+        review = FakeAgentRunner(
+            [codex_stdout("R25", 'HERMES_RESULT={"status":"REVIEW_CLEAN"}')]
+        )
+        self.invoke_agent("review", review)
+        self.assertNotIn("stale-head", review.calls[0][2])
+        self.assertIsNone(self.state()["external_verification"])
+        certification = self.state()["review_certification"]
+        self.assertIn("external_verification_digest", certification)
+        self.assertIsNone(certification["external_verification_digest"])
+
+    def test_evidence_only_review_rejects_full_test_metadata(self):
+        evidence = {
+            "status": "EXTERNAL_VERIFICATION_RESULT",
+            "request": {"command": "live", "boundary": "service", "reason": "required"},
+            "provenance": "executor",
+            "head": self.full_review_certification()["head"],
+            "execution_status": "completed",
+            "exit_status": 0,
+            "stdout": "pass",
+            "stderr": "",
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
+        certification = self.full_review_certification()
+        certification["external_verification_digest"] = None
+        self.write_state(
+            review_certification=certification, external_verification=evidence
+        )
+        handoff = {
+            "status": "HANDOFF",
+            "next_agent": "review",
+            "review_scope": "external_evidence",
+            "task": "Certify evidence only.",
+            "reason": "live run complete",
+            "full_test_command": "python -m unittest",
+        }
+        with self.assertRaisesRegex(
+            run_codex.InvalidAgentResult, "must not include full-test metadata"
+        ):
+            self.invoke_agent(
+                "coordinator",
+                FakeAgentRunner([codex_stdout("C25", "HERMES_RESULT=" + json.dumps(handoff))]),
+            )
+
+    def test_same_head_replacement_verification_does_not_require_full_rereview(self):
+        self.request_executor_verification(command="printf first")
+        run_codex.invoke_external_verification(
+            workflow_id="issue-25",
+            repo=self.repo,
+            state_file=self.state_file,
+            command_runner=lambda command, cwd, timeout_seconds: subprocess.CompletedProcess(
+                command, 1, stdout="inconclusive", stderr=""
+            ),
+        )
+        replacement = {
+            "status": "VERIFY_EXTERNAL",
+            "command": "printf second",
+            "boundary": "real external service boundary",
+            "reason": "replace inconclusive same-HEAD evidence",
+        }
+        self.invoke_agent(
+            "coordinator",
+            FakeAgentRunner([codex_stdout("C25", "HERMES_RESULT=" + json.dumps(replacement))]),
+        )
+        state = self.state()
+        self.assertEqual(state["pending"]["to"], "executor")
+        self.assertEqual(state["review_certification"]["head"], self.full_review_certification()["head"])
+        self.assertIn("external_verification_digest", state["review_certification"])
+        self.assertIsNone(state["review_certification"]["external_verification_digest"])
+
+    def test_evidence_only_review_certifies_exact_evidence_for_merge(self):
+        self.request_executor_verification(command="printf pass")
+        evidence = run_codex.invoke_external_verification(
+            workflow_id="issue-25",
+            repo=self.repo,
+            state_file=self.state_file,
+            command_runner=lambda command, cwd, timeout_seconds: subprocess.CompletedProcess(
+                command, 0, stdout="pass", stderr=""
+            ),
+        )
+        handoff = {
+            "status": "HANDOFF",
+            "next_agent": "review",
+            "review_scope": "external_evidence",
+            "task": "Certify the external verification evidence only.",
+            "reason": "live run complete",
+        }
+        self.invoke_agent(
+            "coordinator",
+            FakeAgentRunner([codex_stdout("C25", "HERMES_RESULT=" + json.dumps(handoff))]),
+        )
+        review = FakeAgentRunner(
+            [codex_stdout("R25", 'HERMES_RESULT={"status":"REVIEW_CLEAN"}')]
+        )
+        self.invoke_agent("review", review)
+        certification = self.state()["review_certification"]
+        self.assertEqual(
+            certification["external_verification_digest"],
+            run_codex._external_verification_digest(evidence),
+        )
+        self.assertIn("Preserved required external-verification evidence", review.calls[0][2])
+
+        merge = {
+            "status": "AWAIT_USER_MERGE",
+            "summary": "ready",
+            "reviewed_head": certification["head"],
+            "draft": False,
+        }
+        changed_evidence = dict(evidence)
+        changed_evidence["stdout"] = "different evidence"
+        state = self.state()
+        state["external_verification"] = changed_evidence
+        self.state_file.write_text(json.dumps(state), encoding="utf-8")
+        with patch("run_codex._current_pr_body_hash", return_value=None):
+            with self.assertRaisesRegex(
+                run_codex.InvalidAgentResult, "Evidence-only Review certification"
+            ):
+                self.invoke_agent(
+                    "coordinator",
+                    FakeAgentRunner([codex_stdout("C25", "HERMES_RESULT=" + json.dumps(merge))]),
+                )
+
+        state = self.state()
+        state["external_verification"] = evidence
+        state["pending"] = {
+            "from": "review",
+            "to": "coordinator",
+            "payload": {"status": "REVIEW_CLEAN"},
+        }
+        self.state_file.write_text(json.dumps(state), encoding="utf-8")
+        with (
+            patch("run_codex._current_pr_body_hash", return_value=None),
+            patch("run_codex._current_pr_head", return_value=certification["head"]),
+            patch("run_codex._current_pr_is_draft", return_value=False),
+        ):
+            self.invoke_agent(
+                "coordinator",
+                FakeAgentRunner([codex_stdout("C25", "HERMES_RESULT=" + json.dumps(merge))]),
+            )
+        self.assertEqual(self.state()["pending"]["to"], "user")
+
+    def test_new_evidence_only_review_invalidates_prior_evidence_certification(self):
+        self.request_executor_verification(command="printf pass")
+        evidence = run_codex.invoke_external_verification(
+            workflow_id="issue-25",
+            repo=self.repo,
+            state_file=self.state_file,
+            command_runner=lambda command, cwd, timeout_seconds: subprocess.CompletedProcess(
+                command, 0, stdout="pass", stderr=""
+            ),
+        )
+        handoff = {
+            "status": "HANDOFF",
+            "next_agent": "review",
+            "review_scope": "external_evidence",
+            "task": "Certify the external verification evidence only.",
+            "reason": "live run complete",
+        }
+        self.invoke_agent(
+            "coordinator",
+            FakeAgentRunner([codex_stdout("C25", "HERMES_RESULT=" + json.dumps(handoff))]),
+        )
+        self.invoke_agent(
+            "review",
+            FakeAgentRunner([codex_stdout("R25", 'HERMES_RESULT={"status":"REVIEW_CLEAN"}')]),
+        )
+        self.assertEqual(
+            self.state()["review_certification"]["external_verification_digest"],
+            run_codex._external_verification_digest(evidence),
+        )
+
+        self.invoke_agent(
+            "coordinator",
+            FakeAgentRunner([codex_stdout("C25", "HERMES_RESULT=" + json.dumps(handoff))]),
+        )
+        self.assertIsNone(
+            self.state()["review_certification"]["external_verification_digest"]
+        )
+        changes_required = {
+            "status": "CHANGES_REQUIRED",
+            "findings": [
+                {
+                    "severity": "medium",
+                    "type": "external/manual gate",
+                    "summary": "Evidence is insufficient.",
+                    "evidence": "The preserved output does not support the classification.",
+                    "remediation_boundary": "Rerun or provide sufficient evidence.",
+                }
+            ],
+        }
+        self.invoke_agent(
+            "review",
+            FakeAgentRunner(
+                [codex_stdout("R25", "HERMES_RESULT=" + json.dumps(changes_required))]
+            ),
+        )
+
+        merge = {
+            "status": "AWAIT_USER_MERGE",
+            "summary": "ready",
+            "reviewed_head": self.full_review_certification()["head"],
+            "draft": False,
+        }
+        with (
+            patch("run_codex._current_pr_body_hash", return_value=None),
+            patch("run_codex._current_pr_head", return_value=merge["reviewed_head"]),
+            patch("run_codex._current_pr_is_draft", return_value=False),
+        ):
+            with self.assertRaisesRegex(
+                run_codex.InvalidAgentResult, "Evidence-only Review certification"
+            ):
+                self.invoke_agent(
+                    "coordinator",
+                    FakeAgentRunner(
+                        [codex_stdout("C25", "HERMES_RESULT=" + json.dumps(merge))]
+                    ),
+                )
+
     def test_coordinator_can_assign_required_verification_to_executor(self):
         requested = self.request_executor_verification()
         state = self.state()
@@ -120,7 +409,10 @@ class ExternalVerificationTests(unittest.TestCase):
             {"from": "coordinator", "to": "executor", "payload": requested},
         )
         self.assertIsNone(state["external_verification"])
-        self.assertIsNone(state["review_certification"])
+        certification = state["review_certification"]
+        self.assertEqual(certification["head"], self.full_review_certification()["head"])
+        self.assertIn("external_verification_digest", certification)
+        self.assertIsNone(certification["external_verification_digest"])
 
     def test_executor_nonzero_is_evidence_and_reverses_pending(self):
         self.request_executor_verification()
@@ -203,6 +495,9 @@ class ExternalVerificationTests(unittest.TestCase):
         self.assertEqual(result["head"], self._git("rev-parse", "HEAD").stdout.strip())
         state = self.state()
         self.assertIsNone(state["external_verification"])
+        self.assertEqual(state["review_certification"]["head"], result["head"])
+        self.assertIn("external_verification_digest", state["review_certification"])
+        self.assertIsNone(state["review_certification"]["external_verification_digest"])
         self.assertEqual(
             state["pending"],
             {"from": "executor", "to": "coordinator", "payload": result},
@@ -379,9 +674,9 @@ class ExternalVerificationTests(unittest.TestCase):
         review_handoff = {
             "status": "HANDOFF",
             "next_agent": "review",
-            "task": "Review current HEAD and validate the external evidence classification.",
+            "review_scope": "external_evidence",
+            "task": "Certify the current external verification evidence only.",
             "reason": "External evidence has been classified.",
-            "full_test_command": "python -m unittest",
         }
         resumed = FakeAgentRunner(
             [codex_stdout("C25", "HERMES_RESULT=" + json.dumps(review_handoff))]
@@ -398,7 +693,7 @@ class ExternalVerificationTests(unittest.TestCase):
         review = FakeAgentRunner(
             [codex_stdout("R25", 'HERMES_RESULT={"status":"REVIEW_CLEAN"}')]
         )
-        with patch("run_codex._current_pr_body_hash", return_value="body"):
+        with patch("run_codex._current_pr_body_hash", return_value=None):
             self.invoke_agent("review", review)
         review_prompt = review.calls[0][2]
         self.assertIn("externally_supplied", review_prompt)
@@ -441,9 +736,9 @@ class ExternalVerificationTests(unittest.TestCase):
         review_handoff = {
             "status": "HANDOFF",
             "next_agent": "review",
-            "task": "Review current HEAD and evidence.",
+            "review_scope": "external_evidence",
+            "task": "Certify current external evidence only.",
             "reason": "verification complete",
-            "full_test_command": "python -m unittest",
         }
         self.invoke_agent(
             "coordinator",
@@ -456,7 +751,9 @@ class ExternalVerificationTests(unittest.TestCase):
         review = FakeAgentRunner(
             [codex_stdout("R25", 'HERMES_RESULT={"status":"REVIEW_CLEAN"}')]
         )
-        with self.assertRaisesRegex(run_codex.InvalidAgentResult, "external verification.*current HEAD"):
+        with self.assertRaisesRegex(
+            run_codex.InvalidAgentResult, "Full Review certification|external verification.*current HEAD"
+        ):
             self.invoke_agent("review", review)
         self.assertEqual(review.calls, [])
 
@@ -485,7 +782,11 @@ class ExternalVerificationTests(unittest.TestCase):
                 "payload": {"status": "REVIEW_CLEAN", "verdict": "APPROVE"},
             },
             external_verification=stale_evidence,
-            review_certification={"head": head, "pr_body_hash": "body"},
+            review_certification={
+                "head": head,
+                "pr_body_hash": None,
+                "external_verification_digest": run_codex._external_verification_digest(stale_evidence),
+            },
         )
         merge_result = {
             "status": "AWAIT_USER_MERGE",

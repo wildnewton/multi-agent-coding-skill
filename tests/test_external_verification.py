@@ -189,6 +189,9 @@ class ExternalVerificationTests(unittest.TestCase):
         self.invoke_agent("review", review)
         self.assertNotIn("stale-head", review.calls[0][2])
         self.assertIsNone(self.state()["external_verification"])
+        certification = self.state()["review_certification"]
+        self.assertIn("external_verification_digest", certification)
+        self.assertIsNone(certification["external_verification_digest"])
 
     def test_evidence_only_review_rejects_full_test_metadata(self):
         evidence = {

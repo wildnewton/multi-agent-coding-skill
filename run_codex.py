@@ -950,7 +950,6 @@ def invoke_agent(
             }
             certification = state.get("review_certification")
             if isinstance(certification, dict):
-                certification["external_verification_required"] = True
                 certification["external_verification_digest"] = None
         _save_state(state_file, state)
         pending = state["pending"]
@@ -1210,6 +1209,7 @@ def invoke_agent(
                     _require_external_verification_current(
                         state, repository_guard["head"], "Coordinator evidence-only Review HANDOFF"
                     )
+                    certification["external_verification_digest"] = None
 
             state["pending"] = {"from": "coordinator", "to": next_agent, "payload": result}
         else:
@@ -1231,7 +1231,6 @@ def invoke_agent(
                     raise InvalidAgentResult(
                         "Coordinator VERIFY_EXTERNAL requires the PR description certified by Full Review"
                     )
-                certification["external_verification_required"] = True
                 certification["external_verification_digest"] = None
                 state["external_verification"] = None
                 state["pending"] = {
@@ -1295,7 +1294,6 @@ def invoke_agent(
                         state, repository_guard["head"],
                         "Coordinator AWAIT_USER_DECISION external_verification",
                     )
-                    certification["external_verification_required"] = True
                     certification["external_verification_digest"] = None
                 user_pending_payload = result
                 if unresolved_external_request is not None and external_request is None:
@@ -1338,7 +1336,7 @@ def invoke_agent(
                     raise InvalidAgentResult(
                         "Coordinator AWAIT_USER_MERGE requires the current PR description to match Full Review certification"
                     )
-                if certification.get("external_verification_required") or state.get("external_verification") is not None:
+                if "external_verification_digest" in certification or state.get("external_verification") is not None:
                     try:
                         evidence = _require_external_verification_current(
                             state, current_head, "Coordinator AWAIT_USER_MERGE"
@@ -1441,7 +1439,6 @@ def invoke_agent(
                         evidence = _require_external_verification_current(
                             state, repository_guard["head"], "Evidence-only Review"
                         )
-                        certification["external_verification_required"] = True
                         certification["external_verification_digest"] = _external_verification_digest(
                             evidence
                         )
